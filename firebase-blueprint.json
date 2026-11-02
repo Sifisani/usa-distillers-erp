@@ -1,0 +1,171 @@
+{
+  "entities": {
+    "jobCard": {
+      "title": "Job Card",
+      "description": "Maintenance job card record for plant equipment and work orders",
+      "type": "object",
+      "properties": {
+        "jobCardNumber": {
+          "type": "string",
+          "description": "Unique identifier like JC-ENG-2026-001"
+        },
+        "department": {
+          "type": "string",
+          "description": "Specific department or sub-unit"
+        },
+        "departmentCategory": {
+          "type": "string",
+          "description": "High-level department category"
+        },
+        "equipmentName": {
+          "type": "string",
+          "description": "Name or tag of the equipment serviced"
+        },
+        "equipmentId": {
+          "type": "string",
+          "description": "Optional ID of registered equipment asset"
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["Low", "Medium", "High", "Emergency"],
+          "description": "Urgency and priority level"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Draft", "In Progress", "Pending Spares", "Completed", "Cancelled"],
+          "description": "Current lifecycle status of the job card"
+        },
+        "description": {
+          "type": "string",
+          "description": "Detailed explanation of work required or fault diagnosed"
+        },
+        "assignedTo": {
+          "type": "string",
+          "description": "Technician or supervisor assigned"
+        },
+        "targetDate": {
+          "type": "string",
+          "description": "Target completion date (YYYY-MM-DD)"
+        },
+        "totalLaborHours": {
+          "type": "number",
+          "description": "Calculated total hours of labor recorded"
+        },
+        "createdById": {
+          "type": "string",
+          "description": "UID of the user who logged this job card"
+        },
+        "createdByName": {
+          "type": "string",
+          "description": "Display name or email of the creator"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp in ISO format"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Last update timestamp in ISO format"
+        }
+      },
+      "required": [
+        "jobCardNumber",
+        "department",
+        "equipmentName",
+        "priority",
+        "status",
+        "description",
+        "assignedTo"
+      ]
+    },
+    "equipment": {
+      "title": "Equipment Asset",
+      "description": "Distillery plant machinery, turbine, boiler, or vehicle asset",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "Equipment identification code"
+        },
+        "name": {
+          "type": "string",
+          "description": "Equipment asset name"
+        },
+        "department": {
+          "type": "string",
+          "description": "Department housing the machinery"
+        },
+        "location": {
+          "type": "string",
+          "description": "Physical area or plant bay"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Operational", "Under Maintenance", "Standby", "Decommissioned"],
+          "description": "Current operational health status"
+        },
+        "criticality": {
+          "type": "string",
+          "enum": ["Low", "Medium", "High", "Critical"],
+          "description": "Impact of equipment failure on production"
+        },
+        "lastServiceDate": {
+          "type": "string",
+          "description": "Last preventive or corrective service date"
+        },
+        "nextServiceDate": {
+          "type": "string",
+          "description": "Scheduled next preventive maintenance"
+        },
+        "activeJobCardsCount": {
+          "type": "number",
+          "description": "Count of open job cards linked"
+        }
+      },
+      "required": ["code", "name", "department", "status"]
+    },
+    "userProfile": {
+      "title": "User Profile",
+      "description": "Staff profile with department and enterprise role",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID"
+        },
+        "email": {
+          "type": "string",
+          "description": "Staff work email"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Staff full name"
+        },
+        "department": {
+          "type": "string",
+          "description": "Primary department"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["Admin", "Supervisor", "Technician", "Operator", "Manager"],
+          "description": "Role in the ERP hierarchy"
+        }
+      },
+      "required": ["uid", "email", "displayName", "role"]
+    }
+  },
+  "firestore": {
+    "/jobCards/{jobCardId}": {
+      "schema": "jobCard",
+      "description": "Job cards tracking maintenance work, labor hours, and progress notes"
+    },
+    "/equipment/{equipmentId}": {
+      "schema": "equipment",
+      "description": "Registered distillery assets, boilers, pumps, fermenters, turbines"
+    },
+    "/users/{userId}": {
+      "schema": "userProfile",
+      "description": "User profile with role and department assignments"
+    }
+  }
+}

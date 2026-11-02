@@ -1,0 +1,88 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny all access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'sifisani@gmail.com' ||
+        (exists(/databases/$(database)/documents/admins/$(request.auth.uid)))
+      );
+    }
+
+    // Job Card validation
+    function isValidJobCard(data) {
+      return data.jobCardNumber is string && data.jobCardNumber.size() <= 50 &&
+             data.department is string && data.department.size() <= 100 &&
+             data.equipmentName is string && data.equipmentName.size() <= 150 &&
+             data.priority in ['Low', 'Medium', 'High', 'Emergency'] &&
+             data.status in ['Draft', 'In Progress', 'Pending Spares', 'Completed', 'Cancelled'] &&
+             data.description is string && data.description.size() <= 4000 &&
+             data.assignedTo is string && data.assignedTo.size() <= 100;
+    }
+
+    // Equipment validation
+    function isValidEquipment(data) {
+      return data.code is string && data.code.size() <= 50 &&
+             data.name is string && data.name.size() <= 150 &&
+             data.department is string && data.department.size() <= 100 &&
+             data.status in ['Operational', 'Under Maintenance', 'Standby', 'Decommissioned'];
+    }
+
+    // User profile validation
+    function isValidUserProfile(data) {
+      return data.uid is string &&
+             data.email is string && data.email.size() <= 150 &&
+             data.displayName is string && data.displayName.size() <= 100;
+    }
+
+    // Test connection doc
+    match /test/{docId} {
+      allow read: if true;
+    }
+
+    // Job Cards Collection: Plant-wide maintenance work orders
+    match /jobCards/{jobCardId} {
+      allow read: if true;
+      allow create: if isValidId(jobCardId) && isValidJobCard(incoming());
+      allow update: if isValidId(jobCardId) && isValidJobCard(incoming());
+      allow delete: if isAdmin() || isSignedIn();
+    }
+
+    // Equipment Collection: Plant machinery asset registry
+    match /equipment/{equipmentId} {
+      allow read: if true;
+      allow create: if isValidId(equipmentId) && isValidEquipment(incoming());
+      allow update: if isValidId(equipmentId) && isValidEquipment(incoming());
+      allow delete: if isAdmin() || isSignedIn();
+    }
+
+    // User Profiles Collection
+    match /users/{userId} {
+      allow read: if true;
+      allow create, update: if isValidUserProfile(incoming());
+      allow delete: if isAdmin();
+    }
+  }
+}

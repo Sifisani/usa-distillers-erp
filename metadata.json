@@ -1,0 +1,6 @@
+{
+  "name": "USA Distillers ERP",
+  "description": "Enterprise Odoo-styled ERP system for USA Distillers featuring real-time Job Card tracking, equipment maintenance, and labor logging.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
