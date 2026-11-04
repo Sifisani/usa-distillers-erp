@@ -37,136 +37,10 @@ eventBus.subscribe<JobCardStatusChangedPayload>('JOB_CARD_STATUS_CHANGED', async
   }
 });
 
-export const INITIAL_EQUIPMENT_DATA: Omit<Equipment, 'id'>[] = [
-  {
-    code: 'EQ-BLR-101',
-    name: 'High-Pressure Steam Boiler #1',
-    department: 'Utilities - Boiler House',
-    location: 'Boiler House Bay 1',
-    status: 'Operational',
-    criticality: 'Critical',
-    lastServiceDate: '2026-09-15',
-    nextServiceDate: '2026-11-15',
-    activeJobCardsCount: 1,
-    manufacturer: 'Babcock & Wilcox',
-    modelNumber: 'BW-5000-STM',
-    notes: 'Primary steam supply for distillation columns and grain mash cooker.',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  },
-  {
-    code: 'EQ-TRB-201',
-    name: 'Siemens Steam Co-Gen Turbine 2.5MW',
-    department: 'Utilities - Turbine Power Plant',
-    location: 'Turbine Hall Floor 2',
-    status: 'Operational',
-    criticality: 'Critical',
-    lastServiceDate: '2026-10-01',
-    nextServiceDate: '2026-12-01',
-    activeJobCardsCount: 0,
-    manufacturer: 'Siemens Energy',
-    modelNumber: 'SST-300',
-    notes: 'Generates on-site electricity from high-pressure process steam.',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  },
-  {
-    code: 'EQ-FERM-301',
-    name: 'Fermenter Tank 01 (60,000L Jacketed)',
-    department: 'Production - Fermentation Bay',
-    location: 'Fermentation Hall A',
-    status: 'Operational',
-    criticality: 'High',
-    lastServiceDate: '2026-08-20',
-    nextServiceDate: '2026-11-20',
-    activeJobCardsCount: 0,
-    manufacturer: 'Paul Mueller Company',
-    modelNumber: 'PM-F60K',
-    notes: 'Temperature-controlled glycol cooling jackets with CIP spray balls.',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  },
-  {
-    code: 'EQ-FERM-302',
-    name: 'Fermenter Tank 02 (60,000L Agitated)',
-    department: 'Production - Fermentation Bay',
-    location: 'Fermentation Hall A',
-    status: 'Under Maintenance',
-    criticality: 'High',
-    lastServiceDate: '2026-10-10',
-    nextServiceDate: '2026-11-01',
-    activeJobCardsCount: 1,
-    manufacturer: 'Paul Mueller Company',
-    modelNumber: 'PM-F60K-AG',
-    notes: 'Agitator gearbox seal inspection in progress.',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  },
-  {
-    code: 'EQ-COL-401',
-    name: 'Copper Pot Still Wash Column A',
-    department: 'Production - Distillation Columns',
-    location: 'Stillhouse Deck 1',
-    status: 'Operational',
-    criticality: 'Critical',
-    lastServiceDate: '2026-09-05',
-    nextServiceDate: '2026-12-05',
-    activeJobCardsCount: 1,
-    manufacturer: 'Forsyths of Rothes',
-    modelNumber: 'FYS-COPPER-12K',
-    notes: 'Traditional swan neck copper still with shell and tube condenser.',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  },
-  {
-    code: 'EQ-MILL-501',
-    name: 'Bühler 4-Roll Malt Grain Mill',
-    department: 'Production - Mash & Grain Milling',
-    location: 'Grist Mill Silo Tower',
-    status: 'Operational',
-    criticality: 'High',
-    lastServiceDate: '2026-07-12',
-    nextServiceDate: '2026-11-12',
-    activeJobCardsCount: 1,
-    manufacturer: 'Bühler Group',
-    modelNumber: 'MDDK-1000',
-    notes: 'Adjustable roll gap milling for barley, corn, and rye grist.',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  },
-  {
-    code: 'EQ-WTR-601',
-    name: 'Reverse Osmosis Water Purification Skid',
-    department: 'Utilities - Water Treatment',
-    location: 'Water Treatment Plant',
-    status: 'Operational',
-    criticality: 'High',
-    lastServiceDate: '2026-10-05',
-    nextServiceDate: '2026-11-30',
-    activeJobCardsCount: 0,
-    manufacturer: 'Ecolab Nalco',
-    modelNumber: 'RO-PRO-400',
-    notes: 'Purifies process spring water for mashing and boiler feed.',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  },
-  {
-    code: 'EQ-FLT-701',
-    name: 'Toyota 3.5T Electric Forklift Unit #4',
-    department: 'Transport Workshop - Forklift Maintenance',
-    location: 'Warehouse Dock A',
-    status: 'Under Maintenance',
-    criticality: 'Medium',
-    lastServiceDate: '2026-10-18',
-    nextServiceDate: '2026-11-05',
-    activeJobCardsCount: 1,
-    manufacturer: 'Toyota Material Handling',
-    modelNumber: '8FB35',
-    notes: 'Hydraulic lift cylinder seal overhaul.',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  }
-];
+import { PLANT_EQUIPMENT_REGISTRY } from '../core/master-data/plantEquipment';
+
+export const INITIAL_EQUIPMENT_DATA: Omit<Equipment, 'id'>[] = PLANT_EQUIPMENT_REGISTRY;
+
 
 export function subscribeEquipment(
   onUpdate: (equipment: Equipment[]) => void,
@@ -202,6 +76,14 @@ export function subscribeEquipment(
           modelNumber: data.modelNumber || '',
           serialNumber: data.serialNumber || '',
           notes: data.notes || '',
+          // Electrical & Plant checklist specs
+          speedRpm: typeof data.speedRpm === 'number' ? data.speedRpm : undefined,
+          powerKw: typeof data.powerKw === 'number' ? data.powerKw : undefined,
+          ratedCurrentAmps: typeof data.ratedCurrentAmps === 'number' ? data.ratedCurrentAmps : undefined,
+          loadCurrentAmps: typeof data.loadCurrentAmps === 'number' ? data.loadCurrentAmps : undefined,
+          overloadAmps: typeof data.overloadAmps === 'number' ? data.overloadAmps : undefined,
+          starterType: data.starterType || undefined,
+          plantArea: data.plantArea || undefined,
           createdAt: data.createdAt || new Date().toISOString(),
           updatedAt: data.updatedAt || new Date().toISOString()
         };
@@ -222,9 +104,28 @@ export function subscribeEquipment(
 
 export async function seedInitialEquipment() {
   for (const item of INITIAL_EQUIPMENT_DATA) {
-    const docRef = doc(collection(db, COLLECTION_NAME));
-    await setDoc(docRef, item);
+    const docId = item.code.toLowerCase().replace(/[^a-z0-9]/g, '-');
+    const docRef = doc(db, COLLECTION_NAME, docId);
+    await setDoc(docRef, item, { merge: true });
   }
+}
+
+/**
+ * Idempotently syncs all 105 active plant machinery items from the official
+ * USA Distillers Electrical Plant Checklist into Firestore.
+ */
+export async function syncOfficialPlantEquipmentRegistry(): Promise<{ syncedCount: number }> {
+  let count = 0;
+  for (const item of PLANT_EQUIPMENT_REGISTRY) {
+    const docId = item.code.toLowerCase().replace(/[^a-z0-9]/g, '-');
+    const docRef = doc(db, COLLECTION_NAME, docId);
+    await setDoc(docRef, {
+      ...item,
+      updatedAt: new Date().toISOString()
+    }, { merge: true });
+    count++;
+  }
+  return { syncedCount: count };
 }
 
 export async function createEquipment(data: Omit<Equipment, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {

@@ -194,9 +194,35 @@ export const JobCardKanbanView: React.FC<JobCardKanbanViewProps> = ({
                       </div>
 
                       {/* Equipment Name */}
-                      <h4 className="text-xs font-semibold text-slate-800 line-clamp-1 mb-1">
+                      <h4 className="text-xs font-semibold text-slate-800 line-clamp-1 mb-0.5">
                         {card.equipmentName}
                       </h4>
+
+                      {/* Trade & Shift Badge */}
+                      {(card.tradeRequired || card.shiftAssigned || card.safetyPermits?.lotoRequired || card.safetyPermits?.hotWorkRequired) && (
+                        <div className="flex flex-wrap items-center gap-1 mb-1.5 text-[10px]">
+                          {card.tradeRequired && (
+                            <span className="px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 font-medium border border-indigo-200">
+                              {card.tradeRequired}
+                            </span>
+                          )}
+                          {card.shiftAssigned && (
+                            <span className="px-1 py-0.2 rounded bg-slate-100 text-slate-700 font-mono">
+                              {card.shiftAssigned}
+                            </span>
+                          )}
+                          {card.safetyPermits?.lotoRequired && (
+                            <span title="LOTO Active" className="bg-amber-100 text-amber-900 px-1 py-0.2 rounded font-bold">
+                              ⚡LOTO
+                            </span>
+                          )}
+                          {card.safetyPermits?.hotWorkRequired && (
+                            <span title="Hot Work Permit Active" className="text-rose-600 font-bold">
+                              🔥
+                            </span>
+                          )}
+                        </div>
+                      )}
 
                       {/* Department */}
                       <div className="text-[11px] text-slate-500 mb-2 truncate">

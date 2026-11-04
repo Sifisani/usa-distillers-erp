@@ -19,11 +19,34 @@ import {
   AlertCircle,
   Check,
   ChevronRight,
-  ShieldAlert
+  ShieldAlert,
+  Zap,
+  ShieldCheck,
+  Flame,
+  ArrowRightLeft,
+  RotateCcw,
+  Sparkles,
+  PhoneCall
 } from 'lucide-react';
-import { JobCard, JobCardStatus, Priority, LaborLog, ActivityComment } from '../../types';
+import {
+  JobCard,
+  JobCardStatus,
+  Priority,
+  LaborLog,
+  ActivityComment,
+  ShiftHandoverLog,
+  SafetyPermits,
+  TechnicalTrade,
+  ShiftGroup
+} from '../../types';
 import { useAuth } from '../../context/AuthContext';
-import { COMPANY_ORGANOGRAM } from '../../core/master-data/organization';
+import {
+  COMPANY_ORGANOGRAM,
+  TECHNICAL_TRADES_LIST,
+  SHIFTS_LIST,
+  getStaffByTrade,
+  getStaffByShift
+} from '../../core/master-data/organization';
 
 interface JobCardDetailModalProps {
   card: JobCard | null;
@@ -32,8 +55,20 @@ interface JobCardDetailModalProps {
   onEdit: (card: JobCard) => void;
   onDelete: (id: string) => Promise<void>;
   onUpdateStatus: (card: JobCard, status: JobCardStatus) => Promise<void>;
-  onAddLabor: (card: JobCard, tech: string, date: string, hours: number, notes: string) => Promise<void>;
+  onAddLabor: (
+    card: JobCard,
+    tech: string,
+    date: string,
+    hours: number,
+    notes: string,
+    options?: {
+      trade?: TechnicalTrade;
+      rateType?: 'Standard' | 'Shift' | 'Standby Callout' | 'Overtime';
+      shift?: ShiftGroup;
+    }
+  ) => Promise<void>;
   onAddComment: (card: JobCard, author: string, message: string) => Promise<void>;
+  onAddHandover?: (card: JobCard, handover: Omit<ShiftHandoverLog, 'id' | 'timestamp'>) => Promise<void>;
   onPrint: (card: JobCard) => void;
 }
 
@@ -48,28 +83,56 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
   onUpdateStatus,
   onAddLabor,
   onAddComment,
+  onAddHandover,
   onPrint
 }) => {
   const { userProfile } = useAuth();
-  const [activeTab, setActiveTab] = useState<'details' | 'labor' | 'chatter'>('details');
+  const [activeTab, setActiveTab] = useState<'details' | 'labor' | 'handovers' | 'chatter'>('details');
 
   // Labor log form state
-  const [laborTech, setLaborTech] = useState(userProfile?.displayName || 'Sam Ngubeni (Maintenance Supervisor)');
+  const [laborTech, setLaborTech] = useState(userProfile?.displayName || 'Phumelele Maseko (Mechanical Fitter)');
+  const [laborTrade, setLaborTrade] = useState<TechnicalTrade>('Mechanical Fitter');
+  const [laborRateType, setLaborRateType] = useState<'Standard' | 'Shift' | 'Standby Callout' | 'Overtime'>('Shift');
+  const [laborShift, setLaborShift] = useState<ShiftGroup>('Shift A');
   const [laborDate, setLaborDate] = useState(new Date().toISOString().split('T')[0]);
   const [laborHours, setLaborHours] = useState('2.0');
   const [laborNotes, setLaborNotes] = useState('');
   const [isLoggingLabor, setIsLoggingLabor] = useState(false);
 
-  // Sync default technician when user switches active logged-in profile
-  useEffect(() => {
-    if (userProfile?.displayName) {
-      setLaborTech(userProfile.title ? `${userProfile.displayName} (${userProfile.title})` : userProfile.displayName);
-    }
-  }, [userProfile]);
+  // Shift Handover form state
+  const [fromShift, setFromShift] = useState<ShiftGroup>('Shift A');
+  const [toShift, setToShift] = useState<ShiftGroup>('Shift B');
+  const [handoverFromPerson, setHandoverFromPerson] = useState('');
+  const [handoverToPerson, setHandoverToPerson] = useState('');
+  const [tasksCompleted, setTasksCompleted] = useState('');
+  const [pendingTasks, setPendingTasks] = useState('');
+  const [hazardsOrIsolations, setHazardsOrIsolations] = useState('');
+  const [isLoggingHandover, setIsLoggingHandover] = useState(false);
+  const [showHandoverForm, setShowHandoverForm] = useState(false);
 
   // Comment state
   const [commentText, setCommentText] = useState('');
   const [isSubmittingComment, setIsSubmittingComment] = useState(false);
+
+  // Sync default technician when user switches active logged-in profile or card changes
+  useEffect(() => {
+    if (userProfile?.displayName) {
+      setLaborTech(userProfile.title ? `${userProfile.displayName} (${userProfile.title})` : userProfile.displayName);
+      setHandoverFromPerson(userProfile.displayName);
+    }
+    if (card) {
+      if (card.tradeRequired) setLaborTrade(card.tradeRequired);
+      if (card.shiftAssigned) {
+        setLaborShift(card.shiftAssigned);
+        setFromShift(card.shiftAssigned);
+        // Suggest next continuous shift
+        if (card.shiftAssigned === 'Shift A') setToShift('Shift B');
+        else if (card.shiftAssigned === 'Shift B') setToShift('Shift C');
+        else if (card.shiftAssigned === 'Shift C') setToShift('Shift D');
+        else if (card.shiftAssigned === 'Shift D') setToShift('Shift A');
+      }
+    }
+  }, [userProfile, card]);
 
   if (!isOpen || !card) return null;
 
@@ -83,11 +146,40 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
 
     setIsLoggingLabor(true);
     try {
-      await onAddLabor(card, laborTech, laborDate, hoursNum, laborNotes.trim());
+      await onAddLabor(card, laborTech, laborDate, hoursNum, laborNotes.trim(), {
+        trade: laborTrade,
+        rateType: laborRateType,
+        shift: laborShift
+      });
       setLaborNotes('');
       setLaborHours('1.0');
     } finally {
       setIsLoggingLabor(false);
+    }
+  };
+
+  const handleHandoverSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!onAddHandover) return;
+    if (!tasksCompleted.trim() || !pendingTasks.trim() || !handoverToPerson.trim()) return;
+
+    setIsLoggingHandover(true);
+    try {
+      await onAddHandover(card, {
+        fromShift,
+        toShift,
+        handedOverBy: handoverFromPerson || currentAuthorName,
+        handedOverTo: handoverToPerson,
+        tasksCompleted: tasksCompleted.trim(),
+        pendingTasks: pendingTasks.trim(),
+        hazardsOrIsolations: hazardsOrIsolations.trim()
+      });
+      setTasksCompleted('');
+      setPendingTasks('');
+      setHazardsOrIsolations('');
+      setShowHandoverForm(false);
+    } finally {
+      setIsLoggingHandover(false);
     }
   };
 
@@ -118,6 +210,9 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
         return 'bg-slate-100 text-slate-600';
     }
   };
+
+  const specs = card.equipmentSpecs;
+  const permits = card.safetyPermits;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 overflow-y-auto">
@@ -191,7 +286,7 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
 
           {/* Odoo Chevron Status Stage Bar */}
           <div className="flex items-center space-x-1 text-xs">
-            {STAGES.map((stage, idx) => {
+            {STAGES.map((stage) => {
               const isCurrent = card.status === stage;
               return (
                 <button
@@ -224,12 +319,12 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
         </div>
 
         {/* Modal Scrollable Body */}
-        <div className="p-6 overflow-y-auto flex-1 space-y-5 bg-[#f8f9fa]">
+        <div className="p-6 overflow-y-auto flex-1 space-y-4 bg-[#f8f9fa]">
           {/* Card Top Title Block */}
-          <div className="bg-white p-5 rounded border border-slate-200 shadow-2xs">
-            <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+          <div className="bg-white p-5 rounded border border-slate-200 shadow-2xs space-y-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <div className="flex items-center space-x-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <span className="text-xl font-mono font-bold text-slate-900 tracking-tight">
                     {card.jobCardNumber}
                   </span>
@@ -240,9 +335,22 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                   <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-purple-50 text-[#714B67] border border-purple-200">
                     {card.status}
                   </span>
+
+                  {card.tradeRequired && (
+                    <span className="px-2 py-0.5 rounded text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-200">
+                      🛠️ {card.tradeRequired}
+                    </span>
+                  )}
+
+                  {card.shiftAssigned && (
+                    <span className="px-2 py-0.5 rounded text-xs font-mono font-medium bg-slate-100 text-slate-800 border border-slate-200">
+                      🕒 {card.shiftAssigned}
+                    </span>
+                  )}
                 </div>
-                <h2 className="text-base font-bold text-slate-800 mt-1">
-                  {card.equipmentName}
+
+                <h2 className="text-base font-bold text-slate-800 mt-1.5 flex items-center gap-2">
+                  <span>{card.equipmentName}</span>
                 </h2>
               </div>
 
@@ -256,6 +364,62 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                 </div>
               </div>
             </div>
+
+            {/* Electrical Specs Badge (if available from PDF checklist) */}
+            {specs && (
+              <div className="bg-purple-50/70 border border-purple-200 rounded p-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-purple-900">
+                <span className="font-bold flex items-center gap-1 text-[#714B67]">
+                  <Zap className="w-3.5 h-3.5 text-amber-500" />
+                  Electrical Checklist Data:
+                </span>
+                {specs.powerKw && <span><strong>Motor:</strong> {specs.powerKw} kW</span>}
+                {specs.starterType && (
+                  <span className="bg-purple-200/80 text-purple-900 px-1.5 py-0.5 rounded font-mono font-semibold">
+                    Starter: {specs.starterType}
+                  </span>
+                )}
+                {specs.ratedCurrentAmps && <span><strong>Rated:</strong> {specs.ratedCurrentAmps} A</span>}
+                {specs.overloadAmps && (
+                  <span className="bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded font-mono font-semibold">
+                    O/L Setting: {specs.overloadAmps} A
+                  </span>
+                )}
+                {specs.speedRpm && <span><strong>Speed:</strong> {specs.speedRpm} RPM</span>}
+                {specs.plantArea && <span className="text-slate-600">Area: <strong>{specs.plantArea}</strong></span>}
+              </div>
+            )}
+
+            {/* Safety Permits Bar */}
+            {permits && (permits.lotoRequired || permits.hotWorkRequired || permits.confinedSpaceRequired || permits.heightPermitRequired) && (
+              <div className="bg-emerald-50/80 border border-emerald-200 rounded p-2.5 flex flex-wrap items-center gap-3 text-xs text-emerald-900">
+                <span className="font-bold flex items-center gap-1 text-emerald-800">
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                  Safety Permits Active:
+                </span>
+                {permits.lotoRequired && (
+                  <span className="bg-amber-100 text-amber-900 px-2 py-0.5 rounded font-semibold border border-amber-300 flex items-center gap-1">
+                    <Zap className="w-3 h-3 text-amber-700" />
+                    LOTO Tag: {permits.lotoTag || 'Active Electrical Isolation'}
+                  </span>
+                )}
+                {permits.hotWorkRequired && (
+                  <span className="bg-rose-100 text-rose-900 px-2 py-0.5 rounded font-semibold border border-rose-300 flex items-center gap-1">
+                    <Flame className="w-3 h-3 text-rose-700" />
+                    Hot Work Permit Authorized
+                  </span>
+                )}
+                {permits.confinedSpaceRequired && (
+                  <span className="bg-slate-100 text-slate-800 px-2 py-0.5 rounded border border-slate-300">
+                    Confined Space Entry
+                  </span>
+                )}
+                {permits.heightPermitRequired && (
+                  <span className="bg-slate-100 text-slate-800 px-2 py-0.5 rounded border border-slate-300">
+                    Rigging / Working at Heights
+                  </span>
+                )}
+              </div>
+            )}
 
             {/* Key Field Grid */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-3 border-t border-slate-100 text-xs">
@@ -278,7 +442,7 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
             </div>
           </div>
 
-          {/* Tab Navigation: Details, Labor Hours, Activity Chatter */}
+          {/* Tab Navigation: Details, Labor Hours, Shift Handovers, Chatter */}
           <div className="flex border-b border-slate-200 bg-white px-4 pt-2 rounded-t border-t border-l border-r">
             <button
               onClick={() => setActiveTab('details')}
@@ -289,7 +453,7 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
               }`}
             >
               <FileText className="w-3.5 h-3.5" />
-              <span>Work Order Details</span>
+              <span>Details</span>
             </button>
 
             <button
@@ -301,7 +465,19 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
               }`}
             >
               <Clock className="w-3.5 h-3.5" />
-              <span>Labor Hours Log ({card.laborLogs?.length || 0})</span>
+              <span>Labor Logs ({card.laborLogs?.length || 0})</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('handovers')}
+              className={`py-2 px-4 text-xs font-semibold border-b-2 -mb-px transition cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'handovers'
+                  ? 'border-[#714B67] text-[#714B67]'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <ArrowRightLeft className="w-3.5 h-3.5" />
+              <span>Shift Handovers ({card.shiftHandovers?.length || 0})</span>
             </button>
 
             <button
@@ -313,7 +489,7 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
               }`}
             >
               <History className="w-3.5 h-3.5" />
-              <span>Activity & Chatter ({card.comments?.length || 0})</span>
+              <span>Audit Timeline ({card.comments?.length || 0})</span>
             </button>
           </div>
 
@@ -333,9 +509,9 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                 <div className="p-3 bg-rose-50 border border-rose-200 rounded text-rose-800 text-xs flex items-start gap-2">
                   <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
                   <div>
-                    <span className="font-bold">Plant Emergency Protocol Active: </span>
+                    <span className="font-bold">Plant Emergency Breakdown Protocol: </span>
                     <span>
-                      Requires continuous supervisor reporting and immediate post-repair hydro-testing or electrical calibration verification.
+                      Requires continuous supervisor reporting, standby artisan dispatch, and immediate post-repair hydro-testing or electrical calibration verification.
                     </span>
                   </div>
                 </div>
@@ -345,7 +521,7 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                 <div className="p-3 bg-slate-50 rounded border border-slate-100 text-xs">
                   <span className="text-slate-400 block text-[11px] font-semibold">Asset Registered</span>
                   <span className="font-medium text-slate-800 mt-1 block">
-                    {card.equipmentId ? `Linked Asset ID: ${card.equipmentId}` : 'Ad-hoc Plant Machinery Entry'}
+                    {card.equipmentId ? `Asset Tag: ${card.equipmentId}` : 'Plant Machinery Registry Asset'}
                   </span>
                 </div>
                 <div className="p-3 bg-slate-50 rounded border border-slate-100 text-xs">
@@ -366,29 +542,77 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                 <div className="text-xs font-bold text-slate-800 flex items-center justify-between">
                   <span className="flex items-center gap-1.5">
                     <PlusCircle className="w-3.5 h-3.5 text-[#714B67]" />
-                    Record Technician Labor
+                    Record Artisan / Crew Labor
                   </span>
-                  <span className="text-[11px] text-slate-400 font-normal">Updates total hours in real time</span>
+                  <span className="text-[11px] text-slate-400 font-normal">Real-time timesheet & payroll tracking</span>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div>
                     <label className="block text-[11px] font-medium text-slate-600 mb-1">
-                      Technician Name
+                      Technician / Artisan
                     </label>
                     <input
                       type="text"
                       required
-                      list="staff-tech-list"
+                      list="staff-tech-list-detail"
                       value={laborTech}
                       onChange={(e) => setLaborTech(e.target.value)}
                       className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white"
                     />
-                    <datalist id="staff-tech-list">
+                    <datalist id="staff-tech-list-detail">
                       {COMPANY_ORGANOGRAM.map((member) => (
                         <option key={member.id} value={`${member.name} (${member.title})`} />
                       ))}
                     </datalist>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-600 mb-1">
+                      Trade Category
+                    </label>
+                    <select
+                      value={laborTrade}
+                      onChange={(e) => setLaborTrade(e.target.value as TechnicalTrade)}
+                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white font-medium"
+                    >
+                      {TECHNICAL_TRADES_LIST.map((t) => (
+                        <option key={t.id} value={t.id}>{t.id}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-600 mb-1">
+                      Rate Type
+                    </label>
+                    <select
+                      value={laborRateType}
+                      onChange={(e) => setLaborRateType(e.target.value as any)}
+                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white font-medium"
+                    >
+                      <option value="Standard">Standard (07:00-17:00 M-F)</option>
+                      <option value="Shift">Shift Hours (24/7)</option>
+                      <option value="Standby Callout">Standby Call-out (Wed-to-Wed)</option>
+                      <option value="Overtime">Overtime Hours</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-600 mb-1">
+                      Shift
+                    </label>
+                    <select
+                      value={laborShift}
+                      onChange={(e) => setLaborShift(e.target.value as ShiftGroup)}
+                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white font-medium"
+                    >
+                      {SHIFTS_LIST.map((s) => (
+                        <option key={s.id} value={s.id}>{s.label}</option>
+                      ))}
+                    </select>
                   </div>
 
                   <div>
@@ -406,7 +630,7 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
 
                   <div>
                     <label className="block text-[11px] font-medium text-slate-600 mb-1">
-                      Hours (e.g. 2.5)
+                      Hours Worked
                     </label>
                     <input
                       type="number"
@@ -423,14 +647,14 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
 
                 <div>
                   <label className="block text-[11px] font-medium text-slate-600 mb-1">
-                    Task Notes & Work Carried Out *
+                    Task Notes & Technical Work Carried Out *
                   </label>
                   <input
                     type="text"
                     required
                     value={laborNotes}
                     onChange={(e) => setLaborNotes(e.target.value)}
-                    placeholder="e.g. Dismantled pump coupling, drained oil, aligned with laser gauge..."
+                    placeholder="e.g. Uncoupled pump motor, pulled damaged mechanical seal, cleaned shaft sleeve..."
                     className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white"
                   />
                 </div>
@@ -463,7 +687,8 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                       <thead className="bg-slate-100 text-slate-600 text-[11px] font-semibold border-b border-slate-200">
                         <tr>
                           <th className="py-2 px-3">Date</th>
-                          <th className="py-2 px-3">Technician</th>
+                          <th className="py-2 px-3">Technician / Trade</th>
+                          <th className="py-2 px-3">Rate & Shift</th>
                           <th className="py-2 px-3">Task Details</th>
                           <th className="py-2 px-3 text-right">Hours</th>
                         </tr>
@@ -472,7 +697,16 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                         {card.laborLogs.map((log) => (
                           <tr key={log.id} className="hover:bg-slate-50">
                             <td className="py-2 px-3 font-mono text-slate-600">{log.date}</td>
-                            <td className="py-2 px-3 font-medium text-slate-800">{log.technician}</td>
+                            <td className="py-2 px-3 font-medium text-slate-800">
+                              <div>{log.technician}</div>
+                              {log.trade && <div className="text-[10px] text-indigo-600">{log.trade}</div>}
+                            </td>
+                            <td className="py-2 px-3 text-slate-600">
+                              <span className="px-1.5 py-0.5 rounded bg-slate-100 text-[10px] border border-slate-200">
+                                {log.rateType || 'Standard'}
+                              </span>
+                              {log.shift && <span className="ml-1 text-[10px] text-slate-500 font-mono">({log.shift})</span>}
+                            </td>
                             <td className="py-2 px-3 text-slate-600">{log.taskNotes}</td>
                             <td className="py-2 px-3 text-right font-mono font-bold text-[#714B67]">
                               {Number(log.hours).toFixed(2)}h
@@ -482,7 +716,7 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                       </tbody>
                       <tfoot className="bg-slate-50 font-bold border-t border-slate-200 text-xs">
                         <tr>
-                          <td colSpan={3} className="py-2 px-3 text-slate-700">Cumulative Labor Logged</td>
+                          <td colSpan={4} className="py-2 px-3 text-slate-700">Cumulative Labor Logged</td>
                           <td className="py-2 px-3 text-right font-mono text-[#714B67]">
                             {card.totalLaborHours.toFixed(2)}h
                           </td>
@@ -495,7 +729,222 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
             </div>
           )}
 
-          {/* TAB 3: Activity & Odoo Chatter */}
+          {/* TAB 3: Shift Handovers (Continuous 24/7 Plant Support) */}
+          {activeTab === 'handovers' && (
+            <div className="bg-white p-5 rounded-b border border-slate-200 shadow-2xs space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                    <ArrowRightLeft className="w-3.5 h-3.5 text-[#714B67]" />
+                    Shift Handover Log (24/7 Crew Continuity)
+                  </h4>
+                  <p className="text-[11px] text-slate-500">
+                    Pass breakdown custody between incoming and outgoing Fitters & Riggers without creating duplicate tickets.
+                  </p>
+                </div>
+
+                {onAddHandover && (
+                  <button
+                    onClick={() => setShowHandoverForm(!showHandoverForm)}
+                    className="px-3 py-1.5 rounded bg-[#714B67] hover:bg-[#5b3c53] text-white text-xs font-semibold cursor-pointer transition flex items-center gap-1"
+                  >
+                    <PlusCircle className="w-3.5 h-3.5" />
+                    <span>{showHandoverForm ? 'Close Handover Form' : 'Hand Over to Next Shift'}</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Handover Form */}
+              {showHandoverForm && onAddHandover && (
+                <form onSubmit={handleHandoverSubmit} className="p-4 bg-purple-50/50 border border-purple-200 rounded space-y-3">
+                  <div className="text-xs font-bold text-purple-900 border-b border-purple-200 pb-1">
+                    Record Formal Shift Handover
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-600 mb-1">
+                        From Shift
+                      </label>
+                      <select
+                        value={fromShift}
+                        onChange={(e) => setFromShift(e.target.value as ShiftGroup)}
+                        className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white font-medium"
+                      >
+                        {SHIFTS_LIST.map((s) => (
+                          <option key={s.id} value={s.id}>{s.label}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-600 mb-1">
+                        Handing Over (Outgoing)
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={handoverFromPerson}
+                        onChange={(e) => setHandoverFromPerson(e.target.value)}
+                        placeholder="Outgoing artisan name"
+                        className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-600 mb-1">
+                        To Shift
+                      </label>
+                      <select
+                        value={toShift}
+                        onChange={(e) => {
+                          const ns = e.target.value as ShiftGroup;
+                          setToShift(ns);
+                          const crew = getStaffByShift(ns);
+                          if (crew.length > 0) {
+                            setHandoverToPerson(crew[0].name);
+                          }
+                        }}
+                        className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white font-medium"
+                      >
+                        {SHIFTS_LIST.map((s) => (
+                          <option key={s.id} value={s.id}>{s.label}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-600 mb-1">
+                        Receiving (Incoming)
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        list="incoming-crew-list"
+                        value={handoverToPerson}
+                        onChange={(e) => setHandoverToPerson(e.target.value)}
+                        placeholder="Incoming artisan"
+                        className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white"
+                      />
+                      <datalist id="incoming-crew-list">
+                        {COMPANY_ORGANOGRAM.map((member) => (
+                          <option key={member.id} value={member.name}>
+                            {member.trade} ({member.shift})
+                          </option>
+                        ))}
+                      </datalist>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-700 mb-1">
+                        Work Completed on This Shift *
+                      </label>
+                      <textarea
+                        required
+                        rows={2}
+                        value={tasksCompleted}
+                        onChange={(e) => setTasksCompleted(e.target.value)}
+                        placeholder="e.g. Pump casing unbolted, old impeller removed, new seal faces cleaned..."
+                        className="w-full text-xs p-2 border border-slate-300 rounded bg-white"
+                      ></textarea>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-700 mb-1">
+                        Pending Tasks for Incoming Shift *
+                      </label>
+                      <textarea
+                        required
+                        rows={2}
+                        value={pendingTasks}
+                        onChange={(e) => setPendingTasks(e.target.value)}
+                        placeholder="e.g. Torque bolts to 85 Nm, install coupling guard, verify alignment with Stanley..."
+                        className="w-full text-xs p-2 border border-slate-300 rounded bg-white"
+                      ></textarea>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-700 mb-1">
+                      Safety Isolations & LOTO Status (Critical)
+                    </label>
+                    <input
+                      type="text"
+                      value={hazardsOrIsolations}
+                      onChange={(e) => setHazardsOrIsolations(e.target.value)}
+                      placeholder="e.g. Breaker 14 locked out by Bongani Dlamini. Suction valve closed and tagged."
+                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white"
+                    />
+                  </div>
+
+                  <div className="flex justify-end pt-1">
+                    <button
+                      type="submit"
+                      disabled={isLoggingHandover}
+                      className="px-4 py-1.5 rounded bg-[#714B67] hover:bg-[#5b3c53] text-white text-xs font-semibold shadow-xs transition disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
+                    >
+                      <ArrowRightLeft className="w-3.5 h-3.5" />
+                      <span>{isLoggingHandover ? 'Transferring...' : 'Submit Handover'}</span>
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {/* Handover Timeline History */}
+              <div className="space-y-3">
+                {(!card.shiftHandovers || card.shiftHandovers.length === 0) ? (
+                  <div className="py-8 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded">
+                    No shift handovers logged yet. If this breakdown crosses into the next 4-shift rotation, use the button above.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {card.shiftHandovers.slice().reverse().map((h) => (
+                      <div key={h.id} className="p-4 rounded border border-purple-200 bg-purple-50/30 space-y-2 text-xs">
+                        <div className="flex items-center justify-between border-b border-purple-100 pb-1.5">
+                          <div className="font-bold text-[#714B67] flex items-center gap-2">
+                            <span className="px-2 py-0.5 rounded bg-purple-100 text-purple-900 font-mono text-[11px]">
+                              {h.fromShift} ➔ {h.toShift}
+                            </span>
+                            <span>Handed over by <strong>{h.handedOverBy}</strong> to <strong>{h.handedOverTo}</strong></span>
+                          </div>
+                          <span className="text-[10px] font-mono text-slate-400">
+                            {new Date(h.timestamp).toLocaleString()}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs pt-1">
+                          <div className="bg-white p-2.5 rounded border border-slate-200">
+                            <span className="text-[10px] uppercase font-bold text-emerald-700 block mb-1">
+                              ✓ Completed on {h.fromShift}
+                            </span>
+                            <p className="text-slate-800">{h.tasksCompleted}</p>
+                          </div>
+
+                          <div className="bg-white p-2.5 rounded border border-slate-200">
+                            <span className="text-[10px] uppercase font-bold text-amber-700 block mb-1">
+                              ➔ Handed Over to {h.toShift}
+                            </span>
+                            <p className="text-slate-800">{h.pendingTasks}</p>
+                          </div>
+                        </div>
+
+                        {h.hazardsOrIsolations && (
+                          <div className="bg-amber-50 border border-amber-200 rounded p-2 text-[11px] text-amber-900 flex items-center gap-2">
+                            <Zap className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                            <span><strong>Isolations & Hazards:</strong> {h.hazardsOrIsolations}</span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* TAB 4: Activity & Odoo Chatter */}
           {activeTab === 'chatter' && (
             <div className="bg-white p-5 rounded-b border border-slate-200 shadow-2xs space-y-4">
               {/* Odoo Chatter Input */}
@@ -508,7 +957,7 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                     type="text"
                     value={commentText}
                     onChange={(e) => setCommentText(e.target.value)}
-                    placeholder="Log a progress update, spare parts note, or observation..."
+                    placeholder="Log progress, stores spares arrival, torque verification..."
                     className="flex-1 text-xs px-3 py-2 border border-slate-300 rounded focus:border-[#714B67] focus:outline-none"
                   />
                   <button
@@ -535,19 +984,23 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                 ) : (
                   <div className="space-y-2.5">
                     {card.comments.slice().reverse().map((c) => {
-                      const isSystem = c.type === 'system' || c.type === 'status_change';
+                      const isSystem = c.type === 'system' || c.type === 'status_change' || c.type === 'handover';
                       return (
                         <div
                           key={c.id}
                           className={`p-3 rounded text-xs border ${
-                            isSystem
-                              ? 'bg-purple-50/40 border-purple-100 text-slate-700'
-                              : 'bg-slate-50 border-slate-200 text-slate-800'
+                            c.type === 'handover'
+                              ? 'bg-purple-50/50 border-purple-200 text-slate-800'
+                              : isSystem
+                              ? 'bg-slate-50 border-slate-200 text-slate-700'
+                              : 'bg-white border-slate-200 text-slate-800'
                           }`}
                         >
                           <div className="flex items-center justify-between mb-1">
                             <span className="font-semibold text-slate-900 flex items-center gap-1.5">
-                              {isSystem ? (
+                              {c.type === 'handover' ? (
+                                <ArrowRightLeft className="w-3.5 h-3.5 text-[#714B67]" />
+                              ) : isSystem ? (
                                 <History className="w-3 h-3 text-[#714B67]" />
                               ) : (
                                 <MessageSquare className="w-3 h-3 text-slate-500" />
@@ -558,7 +1011,7 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                               {new Date(c.timestamp).toLocaleString()}
                             </span>
                           </div>
-                          <div className="text-slate-700 text-xs pl-4">
+                          <div className="text-slate-700 text-xs pl-5">
                             {c.message}
                           </div>
                         </div>

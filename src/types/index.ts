@@ -6,6 +6,47 @@ export type EquipmentStatus = 'Operational' | 'Under Maintenance' | 'Standby' | 
 
 export type Criticality = 'Low' | 'Medium' | 'High' | 'Critical';
 
+export type TechnicalTrade =
+  | 'Mechanical Fitter'
+  | 'Rigger'
+  | 'Electrician'
+  | 'Boilermaker'
+  | 'Welder'
+  | 'Painter'
+  | 'General Assistant'
+  | 'Boiler Operator'
+  | 'Boiler Assistant'
+  | 'Water Treatment Operator'
+  | 'Distillation Operator'
+  | 'Fermentation Operator'
+  | 'General Maintenance';
+
+export type ShiftGroup =
+  | 'Shift A'
+  | 'Shift B'
+  | 'Shift C'
+  | 'Shift D'
+  | 'Day Shift'
+  | 'Standby Callout';
+
+export type StarterType = 'DOL' | 'Y/D' | 'VSD' | 'SOFT STARTER' | 'OTHER';
+
+export type PlantArea =
+  | 'Boiler 1'
+  | 'Boiler 2'
+  | 'Boiler 3'
+  | 'Universal'
+  | 'Water Treatment'
+  | 'Distillation'
+  | 'Fermentation'
+  | 'Cooling Towers'
+  | 'Distillation Fans'
+  | 'Fermentation/Turbine Fans'
+  | 'Green Tank'
+  | 'CMS/Molasses Tank'
+  | 'Molasses Offloading Bay'
+  | 'Molasses Dam 1';
+
 export interface LaborLog {
   id: string;
   technician: string;
@@ -13,6 +54,33 @@ export interface LaborLog {
   hours: number;
   taskNotes: string;
   loggedAt: string;
+  trade?: TechnicalTrade;
+  rateType?: 'Standard' | 'Shift' | 'Standby Callout' | 'Overtime';
+  shift?: ShiftGroup;
+}
+
+export interface ShiftHandoverLog {
+  id: string;
+  timestamp: string;
+  fromShift: ShiftGroup;
+  toShift: ShiftGroup;
+  handedOverBy: string;
+  handedOverTo: string;
+  tasksCompleted: string;
+  pendingTasks: string;
+  hazardsOrIsolations?: string;
+}
+
+export interface SafetyPermits {
+  lotoRequired: boolean;
+  lotoTag?: string;
+  lotoSignedBy?: string;
+  lotoSignedAt?: string;
+  hotWorkRequired: boolean;
+  hotWorkSignedBy?: string;
+  hotWorkSignedAt?: string;
+  confinedSpaceRequired: boolean;
+  heightPermitRequired: boolean;
 }
 
 export interface ActivityComment {
@@ -21,7 +89,7 @@ export interface ActivityComment {
   authorEmail?: string;
   message: string;
   timestamp: string;
-  type: 'comment' | 'status_change' | 'labor_logged' | 'system';
+  type: 'comment' | 'status_change' | 'labor_logged' | 'system' | 'handover';
 }
 
 export interface JobCard {
@@ -43,6 +111,22 @@ export interface JobCard {
   createdByName: string;
   createdAt: string;
   updatedAt: string;
+
+  // Real plant operations extensions
+  tradeRequired?: TechnicalTrade;
+  shiftAssigned?: ShiftGroup;
+  standbyTechnician?: string;
+  safetyPermits?: SafetyPermits;
+  shiftHandovers?: ShiftHandoverLog[];
+  equipmentSpecs?: {
+    speedRpm?: number;
+    powerKw?: number;
+    ratedCurrentAmps?: number;
+    loadCurrentAmps?: number;
+    overloadAmps?: number;
+    starterType?: StarterType;
+    plantArea?: PlantArea;
+  };
 }
 
 export interface Equipment {
@@ -60,6 +144,16 @@ export interface Equipment {
   modelNumber?: string;
   serialNumber?: string;
   notes?: string;
+
+  // Technical & electrical plant checklist fields
+  speedRpm?: number;
+  powerKw?: number;
+  ratedCurrentAmps?: number;
+  loadCurrentAmps?: number;
+  overloadAmps?: number;
+  starterType?: StarterType;
+  plantArea?: PlantArea;
+
   createdAt: string;
   updatedAt: string;
 }

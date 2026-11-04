@@ -7,7 +7,17 @@ import {
   onSnapshot
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType, auth } from '../firebase';
-import { JobCard, JobCardStatus, Priority, LaborLog, ActivityComment } from '../types';
+import {
+  JobCard,
+  JobCardStatus,
+  Priority,
+  LaborLog,
+  ActivityComment,
+  ShiftHandoverLog,
+  SafetyPermits,
+  TechnicalTrade,
+  ShiftGroup
+} from '../types';
 import { eventBus } from '../core/events/eventBus';
 
 const COLLECTION_NAME = 'jobCards';
@@ -271,6 +281,12 @@ export function subscribeJobCards(
           comments: Array.isArray(data.comments) ? data.comments : [],
           createdById: data.createdById || '',
           createdByName: data.createdByName || 'Staff Member',
+          tradeRequired: data.tradeRequired || undefined,
+          shiftAssigned: data.shiftAssigned || undefined,
+          standbyTechnician: data.standbyTechnician || undefined,
+          safetyPermits: data.safetyPermits || undefined,
+          shiftHandovers: Array.isArray(data.shiftHandovers) ? data.shiftHandovers : [],
+          equipmentSpecs: data.equipmentSpecs || undefined,
           createdAt: data.createdAt || new Date().toISOString(),
           updatedAt: data.updatedAt || new Date().toISOString()
         };
@@ -426,7 +442,12 @@ export async function addLaborHours(
   technician: string,
   date: string,
   hours: number,
-  taskNotes: string
+  taskNotes: string,
+  options?: {
+    trade?: TechnicalTrade;
+    rateType?: 'Standard' | 'Shift' | 'Standby Callout' | 'Overtime';
+    shift?: ShiftGroup;
+  }
 ): Promise<void> {
   const newLog: LaborLog = {
     id: `lab-${Date.now()}`,
@@ -434,16 +455,22 @@ export async function addLaborHours(
     date,
     hours,
     taskNotes,
-    loggedAt: new Date().toISOString()
+    loggedAt: new Date().toISOString(),
+    trade: options?.trade,
+    rateType: options?.rateType || 'Standard',
+    shift: options?.shift
   };
 
   const updatedLaborLogs = [...(card.laborLogs || []), newLog];
   const newTotalHours = updatedLaborLogs.reduce((acc, curr) => acc + (Number(curr.hours) || 0), 0);
 
+  const rateTag = options?.rateType && options.rateType !== 'Standard' ? ` [${options.rateType}]` : '';
+  const tradeTag = options?.trade ? ` (${options.trade})` : '';
+
   const comment: ActivityComment = {
     id: `com-lab-${Date.now()}`,
     author: technician,
-    message: `Logged ${hours} hours: "${taskNotes}"`,
+    message: `Logged ${hours} hrs${rateTag}${tradeTag}: "${taskNotes}"`,
     timestamp: new Date().toISOString(),
     type: 'labor_logged'
   };
@@ -464,6 +491,57 @@ export async function addLaborHours(
     hours,
     taskNotes
   }).catch(err => console.error('[EventBus] Error publishing LABOR_LOGGED:', err));
+}
+
+export async function addShiftHandover(
+  card: JobCard,
+  handover: Omit<ShiftHandoverLog, 'id' | 'timestamp'>
+): Promise<void> {
+  const newHandover: ShiftHandoverLog = {
+    id: `handover-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    ...handover
+  };
+
+  const updatedHandovers = [...(card.shiftHandovers || []), newHandover];
+
+  const comment: ActivityComment = {
+    id: `com-handover-${Date.now()}`,
+    author: handover.handedOverBy,
+    message: `🔄 Shift Handover from ${handover.fromShift} to ${handover.toShift} (Received by ${handover.handedOverTo}). Completed: ${handover.tasksCompleted}. Pending: ${handover.pendingTasks}${handover.hazardsOrIsolations ? ` | Isolations: ${handover.hazardsOrIsolations}` : ''}`,
+    timestamp: new Date().toISOString(),
+    type: 'handover'
+  };
+
+  const updatedComments = [...(card.comments || []), comment];
+
+  await updateJobCard(card.id, {
+    shiftHandovers: updatedHandovers,
+    shiftAssigned: handover.toShift,
+    assignedTo: handover.handedOverTo,
+    comments: updatedComments
+  });
+}
+
+export async function updateSafetyPermits(
+  card: JobCard,
+  permits: SafetyPermits,
+  actor: string
+): Promise<void> {
+  const comment: ActivityComment = {
+    id: `com-safety-${Date.now()}`,
+    author: actor,
+    message: `🛡️ Safety Permits updated: LOTO ${permits.lotoRequired ? (permits.lotoTag ? `Active (Tag: ${permits.lotoTag})` : 'Required') : 'Not Required'} | Hot Work ${permits.hotWorkRequired ? 'Required & Authorized' : 'Not Required'}`,
+    timestamp: new Date().toISOString(),
+    type: 'system'
+  };
+
+  const updatedComments = [...(card.comments || []), comment];
+
+  await updateJobCard(card.id, {
+    safetyPermits: permits,
+    comments: updatedComments
+  });
 }
 
 export async function addJobCardComment(

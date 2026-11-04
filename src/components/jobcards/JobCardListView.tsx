@@ -330,15 +330,37 @@ export const JobCardListView: React.FC<JobCardListViewProps> = ({
                       />
                     </td>
 
-                    <td className="py-2.5 px-3 font-mono font-semibold text-slate-900 flex items-center gap-1.5">
-                      <span>{card.jobCardNumber}</span>
-                      {card.priority === 'Emergency' && (
-                        <span className="w-2 h-2 rounded-full bg-rose-600 animate-ping"></span>
+                    <td className="py-2.5 px-3 font-mono font-semibold text-slate-900">
+                      <div className="flex items-center gap-1.5">
+                        <span>{card.jobCardNumber}</span>
+                        {card.priority === 'Emergency' && (
+                          <span className="w-2 h-2 rounded-full bg-rose-600 animate-ping"></span>
+                        )}
+                        {card.safetyPermits?.lotoRequired && (
+                          <span title="Electrical LOTO Tagged" className="text-amber-600 font-bold text-[10px] bg-amber-50 px-1 rounded border border-amber-200">
+                            ⚡LOTO
+                          </span>
+                        )}
+                        {card.safetyPermits?.hotWorkRequired && (
+                          <span title="Hot Work Authorized" className="text-rose-600 font-bold text-[10px]">
+                            🔥
+                          </span>
+                        )}
+                      </div>
+                      {card.tradeRequired && (
+                        <div className="text-[10px] text-indigo-700 font-sans font-medium mt-0.5">
+                          {card.tradeRequired} {card.shiftAssigned ? `• ${card.shiftAssigned}` : ''}
+                        </div>
                       )}
                     </td>
 
-                    <td className="py-2.5 px-3 text-slate-800 font-medium max-w-[200px] truncate" title={card.equipmentName}>
-                      {card.equipmentName}
+                    <td className="py-2.5 px-3 text-slate-800 font-medium max-w-[200px]" title={card.equipmentName}>
+                      <div className="truncate">{card.equipmentName}</div>
+                      {card.equipmentSpecs?.powerKw && (
+                        <div className="text-[10px] text-slate-400 font-mono">
+                          {card.equipmentSpecs.powerKw} kW • {card.equipmentSpecs.starterType || 'DOL'}
+                        </div>
+                      )}
                     </td>
 
                     <td className="py-2.5 px-3 text-slate-600">

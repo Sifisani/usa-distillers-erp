@@ -29,6 +29,7 @@ import {
   updateJobCard,
   updateJobCardStatus,
   addLaborHours,
+  addShiftHandover,
   addJobCardComment,
   deleteJobCard
 } from './services/jobCardService';
@@ -37,7 +38,20 @@ import {
   createEquipment,
   updateEquipment
 } from './services/equipmentService';
-import { JobCard, Equipment, JobCardStatus, Priority, DEPARTMENTS_BY_CATEGORY } from './types';
+import {
+  JobCard,
+  Equipment,
+  JobCardStatus,
+  Priority,
+  DEPARTMENTS_BY_CATEGORY,
+  TechnicalTrade,
+  ShiftGroup
+} from './types';
+import {
+  getActiveStandbyRoster,
+  TECHNICAL_TRADES_LIST,
+  SHIFTS_LIST
+} from './core/master-data/organization';
 
 function MainApp() {
   const { userProfile } = useAuth();
@@ -51,6 +65,8 @@ function MainApp() {
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [selectedDepartment, setSelectedDepartment] = useState<string>('');
   const [selectedPriority, setSelectedPriority] = useState<string>('');
+  const [selectedTrade, setSelectedTrade] = useState<string>('');
+  const [selectedShift, setSelectedShift] = useState<string>('');
 
   // Data state
   const [jobCards, setJobCards] = useState<JobCard[]>([]);
@@ -124,8 +140,23 @@ function MainApp() {
     await updateJobCardStatus(card, newStatus, actor);
   };
 
-  const handleAddLabor = async (card: JobCard, tech: string, date: string, hours: number, notes: string) => {
-    await addLaborHours(card, tech, date, hours, notes);
+  const handleAddLabor = async (
+    card: JobCard,
+    tech: string,
+    date: string,
+    hours: number,
+    notes: string,
+    options?: {
+      trade?: TechnicalTrade;
+      rateType?: 'Standard' | 'Shift' | 'Standby Callout' | 'Overtime';
+      shift?: ShiftGroup;
+    }
+  ) => {
+    await addLaborHours(card, tech, date, hours, notes, options);
+  };
+
+  const handleAddHandover = async (card: JobCard, handover: any) => {
+    await addShiftHandover(card, handover);
   };
 
   const handleAddComment = async (card: JobCard, author: string, message: string) => {
@@ -277,6 +308,30 @@ function MainApp() {
 
                 {/* Right: Filters & Grouping Dropdowns */}
                 <div className="flex flex-wrap items-center gap-2 text-xs">
+                  {/* Trade Filter */}
+                  <select
+                    value={selectedTrade}
+                    onChange={(e) => setSelectedTrade(e.target.value)}
+                    className="px-2.5 py-1.5 border border-slate-300 rounded bg-white text-slate-700 focus:outline-none"
+                  >
+                    <option value="">All Trades</option>
+                    {TECHNICAL_TRADES_LIST.map((t) => (
+                      <option key={t.id} value={t.id}>{t.id}</option>
+                    ))}
+                  </select>
+
+                  {/* Shift Filter */}
+                  <select
+                    value={selectedShift}
+                    onChange={(e) => setSelectedShift(e.target.value)}
+                    className="px-2.5 py-1.5 border border-slate-300 rounded bg-white text-slate-700 focus:outline-none font-medium"
+                  >
+                    <option value="">All Shifts / Rosters</option>
+                    {SHIFTS_LIST.map((s) => (
+                      <option key={s.id} value={s.id}>{s.label}</option>
+                    ))}
+                  </select>
+
                   {/* Department Filter */}
                   <div className="flex items-center space-x-1">
                     <Filter className="w-3 h-3 text-slate-400" />
@@ -305,24 +360,81 @@ function MainApp() {
                     className="px-2.5 py-1.5 border border-slate-300 rounded bg-white text-slate-700 focus:outline-none"
                   >
                     <option value="">All Priorities</option>
-                    <option value="Emergency">Emergency Only</option>
+                    <option value="Emergency">🚨 Emergency Only</option>
                     <option value="High">High Priority</option>
                     <option value="Medium">Medium</option>
                     <option value="Low">Low</option>
                   </select>
 
-                  {(selectedDepartment || selectedPriority || searchQuery) && (
+                  {(selectedDepartment || selectedPriority || selectedTrade || selectedShift || searchQuery) && (
                     <button
                       onClick={() => {
                         setSelectedDepartment('');
                         setSelectedPriority('');
+                        setSelectedTrade('');
+                        setSelectedShift('');
                         setSearchQuery('');
                       }}
-                      className="text-slate-500 hover:text-slate-800 text-[11px] underline px-1 cursor-pointer"
+                      className="text-slate-500 hover:text-slate-800 text-[11px] underline px-1 cursor-pointer font-medium"
                     >
-                      Clear
+                      Clear Filters
                     </button>
                   )}
+                </div>
+              </div>
+
+              {/* Plant Shift & Standby Live Roster Banner */}
+              <div className="bg-white border border-slate-200 rounded p-3 shadow-2xs text-xs space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span className="font-bold text-slate-800 uppercase tracking-wider text-[11px]">
+                      Plant Operational Crew Roster & Standby Status
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-slate-400 font-mono">
+                    USA Distillers • Great Usuthu Plant
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2 text-[11px]">
+                  <div className="p-2 rounded bg-purple-50/50 border border-purple-100">
+                    <span className="font-bold text-[#714B67] block">Continuous 4-Shift Breakdown Crew:</span>
+                    <span className="text-slate-700 block text-[10px] mt-0.5">
+                      Shift A: Phumelele Maseko & Sonboy Mngomethulu<br />
+                      Shift B: Nkosnathi Nkhambule & Lwazi Ntjakala
+                    </span>
+                  </div>
+
+                  <div className="p-2 rounded bg-purple-50/50 border border-purple-100">
+                    <span className="font-bold text-[#714B67] block">Continuous 4-Shift (cont.):</span>
+                    <span className="text-slate-700 block text-[10px] mt-0.5">
+                      Shift C: Dwyane Littler & Mandla Dlamini<br />
+                      Shift D: Sifiso Nyawo & Bhanyaza Gamedze
+                    </span>
+                  </div>
+
+                  <div className="p-2 rounded bg-amber-50/60 border border-amber-200">
+                    <span className="font-bold text-amber-900 block flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-600"></span>
+                      Active Standby (Wed-to-Wed):
+                    </span>
+                    <span className="text-slate-700 block text-[10px] mt-0.5">
+                      ⚡ <strong>Electrician:</strong> Msebenzi Gamedze (Bongani Sup)<br />
+                      🛠️ <strong>Boilermaker:</strong> John Khoza (Sam Sup)
+                    </span>
+                  </div>
+
+                  <div className="p-2 rounded bg-amber-50/60 border border-amber-200">
+                    <span className="font-bold text-amber-900 block flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-600"></span>
+                      Active Standby (cont.):
+                    </span>
+                    <span className="text-slate-700 block text-[10px] mt-0.5">
+                      🔥 <strong>Welder:</strong> Makhosi Mbhamali (Sam Sup)<br />
+                      🎨 <strong>Painting / Support:</strong> 3 Painters + 5 Helpers (Day)
+                    </span>
+                  </div>
                 </div>
               </div>
 
@@ -363,7 +475,11 @@ function MainApp() {
               {/* DUAL VIEWS: KANBAN vs LIST */}
               {jobCardViewMode === 'kanban' ? (
                 <JobCardKanbanView
-                  jobCards={jobCards}
+                  jobCards={jobCards.filter(c => {
+                    if (selectedTrade && c.tradeRequired !== selectedTrade) return false;
+                    if (selectedShift && c.shiftAssigned !== selectedShift) return false;
+                    return true;
+                  })}
                   onSelectCard={(card) => setSelectedCardForDetail(card)}
                   onUpdateStatus={handleUpdateStatus}
                   selectedDepartment={selectedDepartment}
@@ -372,7 +488,11 @@ function MainApp() {
                 />
               ) : (
                 <JobCardListView
-                  jobCards={jobCards}
+                  jobCards={jobCards.filter(c => {
+                    if (selectedTrade && c.tradeRequired !== selectedTrade) return false;
+                    if (selectedShift && c.shiftAssigned !== selectedShift) return false;
+                    return true;
+                  })}
                   onSelectCard={(card) => setSelectedCardForDetail(card)}
                   statusFilter={statusFilter}
                   onStatusFilterChange={setStatusFilter}
@@ -402,7 +522,7 @@ function MainApp() {
         equipmentList={equipmentList}
       />
 
-      {/* 2. Job Card Detail / Labor Log / Chatter Modal */}
+      {/* 2. Job Card Detail / Labor Log / Shift Handover / Chatter Modal */}
       <JobCardDetailModal
         card={selectedCardForDetail}
         isOpen={Boolean(selectedCardForDetail)}
@@ -412,6 +532,7 @@ function MainApp() {
         onUpdateStatus={handleUpdateStatus}
         onAddLabor={handleAddLabor}
         onAddComment={handleAddComment}
+        onAddHandover={handleAddHandover}
         onPrint={(card) => {
           setSelectedCardForDetail(null);
           setSelectedCardForPrint(card);
