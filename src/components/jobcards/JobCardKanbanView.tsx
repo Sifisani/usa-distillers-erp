@@ -182,11 +182,21 @@ export const JobCardKanbanView: React.FC<JobCardKanbanViewProps> = ({
                         card.priority === 'Emergency' ? 'ring-1 ring-rose-400/50' : ''
                       }`}
                     >
-                      {/* Card Top Row: JC# and Priority */}
-                      <div className="flex items-center justify-between mb-1.5">
-                        <span className="font-mono text-xs font-bold text-slate-900 group-hover:text-[#714B67]">
-                          {card.jobCardNumber}
-                        </span>
+                      {/* Card Top Row: JC#, WO# and Priority */}
+                      <div className="flex items-center justify-between mb-1.5 flex-wrap gap-1">
+                        <div className="flex items-center gap-1">
+                          <span className="font-mono text-xs font-bold text-slate-900 group-hover:text-[#714B67]">
+                            {card.jobCardNumber}
+                          </span>
+                          {card.workOrderNumber && (
+                            <span
+                              title={`Logged from paper slip book #${card.workOrderNumber}`}
+                              className="bg-red-50 text-red-700 font-mono font-bold text-[9px] px-1 rounded border border-red-200"
+                            >
+                              WO #{card.workOrderNumber}
+                            </span>
+                          )}
+                        </div>
                         <span className={`px-1.5 py-0.5 rounded text-[10px] border inline-flex items-center gap-0.5 ${getPriorityBadge(card.priority)}`}>
                           {card.priority === 'Emergency' && <AlertTriangle className="w-2.5 h-2.5 text-rose-600" />}
                           {card.priority}
@@ -198,9 +208,14 @@ export const JobCardKanbanView: React.FC<JobCardKanbanViewProps> = ({
                         {card.equipmentName}
                       </h4>
 
-                      {/* Trade & Shift Badge */}
-                      {(card.tradeRequired || card.shiftAssigned || card.safetyPermits?.lotoRequired || card.safetyPermits?.hotWorkRequired) && (
+                      {/* Trade, Shift & Safety Badges */}
+                      {(card.tradeRequired || card.shiftAssigned || card.safetyPermits?.lotoRequired || card.safetyPermits?.hotWorkRequired || card.requisitionStage) && (
                         <div className="flex flex-wrap items-center gap-1 mb-1.5 text-[10px]">
+                          {card.requisitionStage && card.requisitionStage !== card.status && (
+                            <span className="px-1.5 py-0.2 rounded bg-amber-50 text-amber-900 font-bold border border-amber-200">
+                              {card.requisitionStage}
+                            </span>
+                          )}
                           {card.tradeRequired && (
                             <span className="px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 font-medium border border-indigo-200">
                               {card.tradeRequired}
@@ -224,9 +239,17 @@ export const JobCardKanbanView: React.FC<JobCardKanbanViewProps> = ({
                         </div>
                       )}
 
-                      {/* Department */}
+                      {/* Department / Inter-departmental Routing */}
                       <div className="text-[11px] text-slate-500 mb-2 truncate">
-                        {card.department}
+                        {card.originatingDepartment && card.recipientDepartment ? (
+                          <span className="flex items-center gap-1 font-medium">
+                            <span className="text-slate-700 truncate max-w-[90px]">{card.originatingDepartment.replace(/Operations - |Engineering & Maintenance - /, '')}</span>
+                            <span className="text-slate-400 font-bold">&rarr;</span>
+                            <span className="text-[#714B67] truncate max-w-[90px]">{card.recipientDepartment.replace(/Engineering & Maintenance - /, '')}</span>
+                          </span>
+                        ) : (
+                          <span>{card.department}</span>
+                        )}
                       </div>
 
                       {/* Description Snippet */}

@@ -573,3 +573,222 @@ export async function deleteJobCard(id: string): Promise<void> {
     throw error;
   }
 }
+
+// ==========================================
+// SUPERVISOR & MANAGER WORKFLOW METHODS
+// ==========================================
+
+export async function acceptAndAssignRequisition(
+  card: JobCard,
+  params: {
+    supervisorName: string;
+    artisanName: string;
+    trade?: TechnicalTrade;
+    shift?: ShiftGroup;
+    targetDate?: string;
+    notes?: string;
+  }
+): Promise<void> {
+  const comment: ActivityComment = {
+    id: `com-accept-${Date.now()}`,
+    author: params.supervisorName,
+    message: `Requisition accepted by ${params.supervisorName}. Assigned to Artisan: ${params.artisanName} (${params.trade || card.tradeRequired || 'Maintenance'})${params.shift ? ` on ${params.shift}` : ''}.${params.notes ? ` Instructions: "${params.notes}"` : ''}`,
+    timestamp: new Date().toISOString(),
+    type: 'system'
+  };
+
+  const updatedComments = [...(card.comments || []), comment];
+
+  await updateJobCard(card.id, {
+    requisitionStage: 'Accepted',
+    status: 'In Progress',
+    assignedSupervisor: params.supervisorName,
+    assignedTo: params.artisanName,
+    tradeRequired: params.trade || card.tradeRequired,
+    shiftAssigned: params.shift || card.shiftAssigned,
+    targetDate: params.targetDate || card.targetDate,
+    acceptedAt: new Date().toISOString(),
+    acceptedBy: params.supervisorName,
+    comments: updatedComments
+  });
+
+  eventBus.publish('JOB_CARD_STATUS_CHANGED', 'maintenance', {
+    jobCardId: card.id,
+    jobCardNumber: card.jobCardNumber,
+    previousStatus: card.status,
+    newStatus: 'In Progress',
+    actor: params.supervisorName
+  }).catch(() => {});
+}
+
+export async function addSparePartRequisition(
+  card: JobCard,
+  part: {
+    partDescription: string;
+    quantity: number;
+    partNumber?: string;
+    storeVoucherNumber?: string;
+    requestedBy: string;
+    markAsPendingSpares?: boolean;
+    unitCostEmalangeni?: number;
+  }
+): Promise<void> {
+  const newItem = {
+    id: `part-${Date.now()}`,
+    partDescription: part.partDescription,
+    quantity: part.quantity,
+    partNumber: part.partNumber || '',
+    storeVoucherNumber: part.storeVoucherNumber || '',
+    requestedBy: part.requestedBy,
+    requestedAt: new Date().toISOString(),
+    status: 'Requested' as const,
+    unitCostEmalangeni: part.unitCostEmalangeni
+  };
+
+  const updatedSpares = [...(card.sparesRequested || []), newItem];
+
+  const comment: ActivityComment = {
+    id: `com-spare-${Date.now()}`,
+    author: part.requestedBy,
+    message: `📦 Spares Requisition: Requested ${part.quantity}x ${part.partDescription} (Stores / Elliot Mhlongo)${part.partNumber ? ` [PN: ${part.partNumber}]` : ''}`,
+    timestamp: new Date().toISOString(),
+    type: 'comment'
+  };
+
+  const updatedComments = [...(card.comments || []), comment];
+
+  const updates: Partial<JobCard> = {
+    sparesRequested: updatedSpares,
+    comments: updatedComments
+  };
+
+  if (part.markAsPendingSpares) {
+    updates.status = 'Pending Spares';
+    updates.requisitionStage = 'Pending Spares';
+  }
+
+  await updateJobCard(card.id, updates);
+}
+
+export async function issueSparePart(
+  card: JobCard,
+  partId: string,
+  params: {
+    issuedBy: string;
+    storeVoucherNumber: string;
+  }
+): Promise<void> {
+  const spares = card.sparesRequested || [];
+  const target = spares.find((p) => p.id === partId);
+  if (!target) return;
+
+  const updatedSpares = spares.map((p) =>
+    p.id === partId
+      ? {
+          ...p,
+          status: 'Issued' as const,
+          issuedBy: params.issuedBy,
+          issuedAt: new Date().toISOString(),
+          storeVoucherNumber: params.storeVoucherNumber || p.storeVoucherNumber
+        }
+      : p
+  );
+
+  const comment: ActivityComment = {
+    id: `com-issue-${Date.now()}`,
+    author: params.issuedBy,
+    message: `✅ Stores Issued: ${target.quantity}x ${target.partDescription} (Voucher #${params.storeVoucherNumber || 'Direct Issue'})`,
+    timestamp: new Date().toISOString(),
+    type: 'comment'
+  };
+
+  await updateJobCard(card.id, {
+    sparesRequested: updatedSpares,
+    comments: [...(card.comments || []), comment]
+  });
+}
+
+export async function recordArtisanHandback(
+  card: JobCard,
+  params: {
+    supervisorName: string;
+    artisanName: string;
+    completionDate: string;
+    completionTime: string;
+    hours: number;
+    handbackNotes: string;
+    trade?: TechnicalTrade;
+  }
+): Promise<void> {
+  // Create labor log from physical hours
+  const newLog: LaborLog = {
+    id: `lab-handback-${Date.now()}`,
+    technician: params.artisanName,
+    date: params.completionDate,
+    hours: params.hours,
+    taskNotes: `Artisan slip handback: ${params.handbackNotes}`,
+    loggedAt: new Date().toISOString(),
+    trade: params.trade || card.tradeRequired,
+    rateType: card.requisitionType === 'Call Out' ? 'Standby Callout' : 'Standard',
+    shift: card.shiftAssigned
+  };
+
+  const updatedLaborLogs = [...(card.laborLogs || []), newLog];
+  const newTotalHours = updatedLaborLogs.reduce((acc, curr) => acc + (Number(curr.hours) || 0), 0);
+
+  const comment: ActivityComment = {
+    id: `com-handback-${Date.now()}`,
+    author: params.supervisorName,
+    message: `📋 Physical Slip Handback Recorded by ${params.supervisorName}: Artisan ${params.artisanName} completed work (${params.hours} hrs). Notes: "${params.handbackNotes}"`,
+    timestamp: new Date().toISOString(),
+    type: 'system'
+  };
+
+  await updateJobCard(card.id, {
+    requisitionStage: 'Artisan Completed',
+    completedByArtisan: params.artisanName,
+    completionDate: params.completionDate,
+    completionTime: params.completionTime,
+    completionHours: params.hours,
+    artisanHandbackNotes: params.handbackNotes,
+    laborLogs: updatedLaborLogs,
+    totalLaborHours: Number(newTotalHours.toFixed(2)),
+    comments: [...(card.comments || []), comment]
+  });
+}
+
+export async function closeOutJobCardHOD(
+  card: JobCard,
+  params: {
+    hodName: string;
+    notes?: string;
+  }
+): Promise<void> {
+  const comment: ActivityComment = {
+    id: `com-hod-${Date.now()}`,
+    author: params.hodName,
+    message: `🎖️ Official HOD Digital Sign-Off by ${params.hodName} (Engineering Manager). Job card approved, completed, and closed.${params.notes ? ` Remarks: "${params.notes}"` : ''}`,
+    timestamp: new Date().toISOString(),
+    type: 'status_change'
+  };
+
+  await updateJobCard(card.id, {
+    requisitionStage: 'HOD Closed',
+    status: 'Completed',
+    hodSignedBy: params.hodName,
+    hodDigitalSignOff: {
+      signedBy: params.hodName,
+      signedAt: new Date().toISOString(),
+      notes: params.notes
+    },
+    comments: [...(card.comments || []), comment]
+  });
+
+  eventBus.publish('JOB_CARD_STATUS_CHANGED', 'maintenance', {
+    jobCardId: card.id,
+    jobCardNumber: card.jobCardNumber,
+    previousStatus: card.status,
+    newStatus: 'Completed',
+    actor: params.hodName
+  }).catch(() => {});
+}

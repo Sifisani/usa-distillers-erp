@@ -145,6 +145,25 @@ export const JobCardListView: React.FC<JobCardListViewProps> = ({
     }
   };
 
+  const getStageBadge = (stage?: string) => {
+    switch (stage) {
+      case 'Pending Acceptance':
+        return 'bg-amber-100 text-amber-900 border-amber-300 font-bold';
+      case 'Accepted':
+        return 'bg-blue-100 text-blue-800 border-blue-200 font-semibold';
+      case 'In Progress':
+        return 'bg-indigo-50 text-indigo-700 border-indigo-200';
+      case 'Pending Spares':
+        return 'bg-orange-100 text-orange-800 border-orange-300 font-bold';
+      case 'Artisan Completed':
+        return 'bg-purple-100 text-purple-900 border-purple-300 font-bold';
+      case 'HOD Closed':
+        return 'bg-emerald-100 text-emerald-800 border-emerald-300 font-bold';
+      default:
+        return 'bg-slate-100 text-slate-600 border-slate-200';
+    }
+  };
+
   const getPriorityBadge = (priority: Priority) => {
     switch (priority) {
       case 'Emergency':
@@ -331,8 +350,16 @@ export const JobCardListView: React.FC<JobCardListViewProps> = ({
                     </td>
 
                     <td className="py-2.5 px-3 font-mono font-semibold text-slate-900">
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-1.5 flex-wrap">
                         <span>{card.jobCardNumber}</span>
+                        {card.workOrderNumber && (
+                          <span
+                            title={`Logged from physical paper slip book #${card.workOrderNumber}`}
+                            className="bg-red-50 text-red-700 font-mono font-bold text-[10px] px-1 rounded border border-red-200"
+                          >
+                            WO #{card.workOrderNumber}
+                          </span>
+                        )}
                         {card.priority === 'Emergency' && (
                           <span className="w-2 h-2 rounded-full bg-rose-600 animate-ping"></span>
                         )}
@@ -364,9 +391,21 @@ export const JobCardListView: React.FC<JobCardListViewProps> = ({
                     </td>
 
                     <td className="py-2.5 px-3 text-slate-600">
-                      <span className="px-2 py-0.5 rounded bg-slate-100 text-[11px] text-slate-700 font-medium">
-                        {card.department}
-                      </span>
+                      {card.originatingDepartment && card.recipientDepartment ? (
+                        <div className="flex items-center gap-1 text-[11px]" title={`From ${card.originatingDepartment} to ${card.recipientDepartment}`}>
+                          <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-medium truncate max-w-[90px]">
+                            {card.originatingDepartment.replace(/Operations - |Engineering & Maintenance - /, '')}
+                          </span>
+                          <span className="text-slate-400 font-bold">&rarr;</span>
+                          <span className="px-1.5 py-0.5 rounded bg-purple-50 text-[#714B67] font-semibold truncate max-w-[100px]">
+                            {card.recipientDepartment.replace(/Engineering & Maintenance - /, '')}
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded bg-slate-100 text-[11px] text-slate-700 font-medium">
+                          {card.department}
+                        </span>
+                      )}
                     </td>
 
                     <td className="py-2.5 px-3">
@@ -377,10 +416,17 @@ export const JobCardListView: React.FC<JobCardListViewProps> = ({
                     </td>
 
                     <td className="py-2.5 px-3">
-                      <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium border inline-flex items-center gap-1 ${getStatusBadge(card.status)}`}>
-                        <span className="w-1.5 h-1.5 rounded-full bg-current"></span>
-                        {card.status}
-                      </span>
+                      <div className="space-y-1">
+                        <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium border inline-flex items-center gap-1 ${getStatusBadge(card.status)}`}>
+                          <span className="w-1.5 h-1.5 rounded-full bg-current"></span>
+                          {card.status}
+                        </span>
+                        {card.requisitionStage && card.requisitionStage !== card.status && (
+                          <div className={`text-[10px] px-1.5 py-0.2 rounded border font-medium ${getStageBadge(card.requisitionStage)}`}>
+                            {card.requisitionStage}
+                          </div>
+                        )}
+                      </div>
                     </td>
 
                     <td className="py-2.5 px-3 text-slate-700">

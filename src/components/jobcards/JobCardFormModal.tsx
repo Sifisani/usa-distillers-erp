@@ -73,6 +73,16 @@ export const JobCardFormModal: React.FC<JobCardFormModalProps> = ({
   const [shiftAssigned, setShiftAssigned] = useState<ShiftGroup>('Shift A');
   const [standbyTechnician, setStandbyTechnician] = useState<string>('');
 
+  // Official Works Requisition fields (Slip #188499)
+  const [workOrderNumber, setWorkOrderNumber] = useState<string>('188499');
+  const [requisitionType, setRequisitionType] = useState<'Normal' | 'Call Out' | 'Stop Day'>('Normal');
+  const [costCenter, setCostCenter] = useState<string>('CC-ENG-03');
+  const [dangerTagRequired, setDangerTagRequired] = useState<boolean>(false);
+  const [dangerTagNumber, setDangerTagNumber] = useState<string>('');
+  const [recipientDepartment, setRecipientDepartment] = useState<string>('Engineering Dept.');
+  const [originatedBy, setOriginatedBy] = useState<string>('Atanasio Muchine (Distillation)');
+  const [originatedTime, setOriginatedTime] = useState<string>('11:30');
+
   // Safety permits
   const [lotoRequired, setLotoRequired] = useState<boolean>(false);
   const [lotoTag, setLotoTag] = useState<string>('');
@@ -108,10 +118,32 @@ export const JobCardFormModal: React.FC<JobCardFormModalProps> = ({
         setConfinedSpaceRequired(existingCard.safetyPermits.confinedSpaceRequired || false);
         setHeightPermitRequired(existingCard.safetyPermits.heightPermitRequired || false);
       }
+
+      setWorkOrderNumber(existingCard.workOrderNumber || existingCard.jobCardNumber.replace(/[^0-9]/g, '') || '188499');
+      setRequisitionType(existingCard.requisitionType || (existingCard.priority === 'Emergency' ? 'Call Out' : 'Normal'));
+      setCostCenter(existingCard.costCenter || 'CC-ENG-03');
+      setDangerTagRequired(existingCard.dangerTagRequired || existingCard.safetyPermits?.lotoRequired || false);
+      setDangerTagNumber(existingCard.dangerTagNumber || existingCard.safetyPermits?.lotoTag || '');
+      setRecipientDepartment(existingCard.recipientDepartment || 'Engineering Dept.');
+      setOriginatedBy(existingCard.originatedBy || existingCard.createdByName || 'Atanasio Muchine (Distillation)');
+      setOriginatedTime(existingCard.originatedTime || '11:30');
     } else {
       // Create mode: auto-generate next JC number based on category
       const autoNum = generateNextJobCardNumber(departmentCategory, existingCards);
       setJobCardNumber(autoNum);
+      const generatedWoNum = `${188500 + existingCards.length}`;
+      setWorkOrderNumber(generatedWoNum);
+      setRequisitionType('Normal');
+      setCostCenter('CC-ENG-03');
+      setDangerTagRequired(false);
+      setDangerTagNumber('');
+      setRecipientDepartment('Engineering Dept.');
+      setOriginatedBy('Atanasio Muchine (Distillation)');
+      
+      const now = new Date();
+      const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      setOriginatedTime(timeStr);
+
       setDepartmentCategory('Utilities');
       setDepartment('Utilities - Boiler House');
       setEquipmentName('');
@@ -271,7 +303,16 @@ export const JobCardFormModal: React.FC<JobCardFormModalProps> = ({
         shiftAssigned,
         standbyTechnician: shiftAssigned === 'Standby Callout' ? standbyTechnician : undefined,
         safetyPermits: safetyPermitsPayload,
-        equipmentSpecs: equipmentSpecsPayload
+        equipmentSpecs: equipmentSpecsPayload,
+        // Official Works Requisition Slip fields
+        workOrderNumber,
+        requisitionType,
+        costCenter,
+        dangerTagRequired: dangerTagRequired || lotoRequired,
+        dangerTagNumber: dangerTagNumber || (lotoRequired ? lotoTag : undefined),
+        recipientDepartment,
+        originatedBy,
+        originatedTime
       });
       onClose();
     } catch (err: any) {
@@ -318,6 +359,162 @@ export const JobCardFormModal: React.FC<JobCardFormModalProps> = ({
               <span>{error}</span>
             </div>
           )}
+
+          {/* Official Works Requisition Slip Header (from physical slip WO #188499) */}
+          <div className="bg-[#f4f6f4] p-3.5 rounded border-2 border-emerald-800/40 shadow-xs space-y-3">
+            <div className="flex items-center justify-between border-b border-emerald-800/20 pb-2">
+              <div className="flex items-center space-x-2">
+                <img
+                  src="/assets/aistudio/Screenshot_2024-01-26_104006_cd1bebac.png"
+                  alt="USA Distillers"
+                  className="h-9 w-auto rounded bg-[#1e4620] p-0.5 border border-emerald-950"
+                />
+                <div>
+                  <span className="font-black text-xs text-slate-900 tracking-wide uppercase block">
+                    WORKS REQUISITION
+                  </span>
+                  <span className="text-[10px] text-emerald-900 font-medium">
+                    USA Distillers (Pty) Ltd • Big Bend Plant
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center space-x-2">
+                <div className="text-right">
+                  <span className="text-[9px] uppercase font-bold text-slate-500 block">WORK ORDER NO:</span>
+                  <input
+                    type="text"
+                    value={workOrderNumber}
+                    onChange={(e) => setWorkOrderNumber(e.target.value)}
+                    placeholder="188499"
+                    className="w-24 text-center font-mono font-black text-red-600 bg-white border border-red-300 rounded px-1.5 py-0.5 text-xs focus:ring-1 focus:ring-red-500"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Slip Meta Checkboxes: Requisition Type & Danger Tag */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
+              {/* Type options: Normal, Call Out, Stop Day */}
+              <div className="bg-white p-2 rounded border border-slate-200">
+                <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                  Requisition Classification
+                </label>
+                <div className="flex items-center space-x-3 text-xs">
+                  <label className="flex items-center space-x-1 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="reqType"
+                      checked={requisitionType === 'Normal'}
+                      onChange={() => setRequisitionType('Normal')}
+                      className="text-emerald-600 focus:ring-emerald-500"
+                    />
+                    <span className="font-semibold text-slate-800">Normal</span>
+                  </label>
+                  <label className="flex items-center space-x-1 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="reqType"
+                      checked={requisitionType === 'Call Out'}
+                      onChange={() => setRequisitionType('Call Out')}
+                      className="text-amber-600 focus:ring-amber-500"
+                    />
+                    <span className="font-semibold text-slate-800">Call Out</span>
+                  </label>
+                  <label className="flex items-center space-x-1 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="reqType"
+                      checked={requisitionType === 'Stop Day'}
+                      onChange={() => setRequisitionType('Stop Day')}
+                      className="text-purple-600 focus:ring-purple-500"
+                    />
+                    <span className="font-semibold text-slate-800">Stop Day</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Danger Tag Req */}
+              <div className={`p-2 rounded border ${dangerTagRequired ? 'bg-red-50 border-red-300' : 'bg-white border-slate-200'}`}>
+                <div className="flex items-center justify-between">
+                  <label className="flex items-center space-x-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={dangerTagRequired}
+                      onChange={(e) => {
+                        setDangerTagRequired(e.target.checked);
+                        if (e.target.checked) setLotoRequired(true);
+                      }}
+                      className="text-red-600 focus:ring-red-500 rounded"
+                    />
+                    <span className="text-[10px] font-black uppercase text-red-900">DANGER TAG REQ.</span>
+                  </label>
+                  <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded ${dangerTagRequired ? 'bg-red-600 text-white' : 'bg-slate-100 text-slate-600'}`}>
+                    {dangerTagRequired ? 'YES' : 'NO'}
+                  </span>
+                </div>
+                {dangerTagRequired && (
+                  <input
+                    type="text"
+                    value={dangerTagNumber}
+                    onChange={(e) => {
+                      setDangerTagNumber(e.target.value);
+                      setLotoTag(e.target.value);
+                    }}
+                    placeholder="Tag # (e.g. DT-094)"
+                    className="mt-1 w-full text-[11px] px-2 py-0.5 border border-red-300 rounded bg-white font-mono"
+                  />
+                )}
+              </div>
+
+              {/* Originated By & Time */}
+              <div className="bg-white p-2 rounded border border-slate-200">
+                <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                  Originated By (Shift Staff)
+                </label>
+                <div className="flex items-center space-x-1.5">
+                  <select
+                    value={originatedBy}
+                    onChange={(e) => setOriginatedBy(e.target.value)}
+                    className="w-full text-[11px] px-1.5 py-0.5 border border-slate-300 rounded bg-white font-medium"
+                  >
+                    <optgroup label="Distillation Operators">
+                      <option value="Atanasio Muchine (Distillation)">Atanasio Muchine</option>
+                      <option value="Jobe Gamedze (Distillation)">Jobe Gamedze</option>
+                      <option value="Dumsane Gumede (Distillation)">Dumsane Gumede</option>
+                      <option value="Smanga Dlamini (Distillation)">Smanga Dlamini</option>
+                    </optgroup>
+                    <optgroup label="Fermentation Operators">
+                      <option value="Kenny Kunene (Fermentation)">Kenny Kunene</option>
+                      <option value="Themba Mamba (Fermentation)">Themba Mamba</option>
+                      <option value="Gerald Fakudze (Fermentation)">Gerald Fakudze</option>
+                      <option value="Zandile Nkhabinze (Fermentation)">Zandile Nkhabinze</option>
+                    </optgroup>
+                    <optgroup label="Boiler Operators">
+                      <option value="Melusi Dlamini (Boilers)">Melusi Dlamini</option>
+                      <option value="Bongani Dladla (Boilers)">Bongani Dladla</option>
+                      <option value="Bryce Matsenjwa (Boilers)">Bryce Matsenjwa</option>
+                      <option value="Victor Vilakati (Boilers)">Victor Vilakati</option>
+                    </optgroup>
+                    <optgroup label="Water Treatment">
+                      <option value="Andriese Gamedze (Water Plant)">Andriese Gamedze</option>
+                      <option value="Masuku (Water Plant)">Masuku</option>
+                      <option value="Simphiwe Dlamini (Water Plant)">Simphiwe Dlamini</option>
+                      <option value="Sakhile (Water Plant)">Sakhile</option>
+                    </optgroup>
+                  </select>
+                  <input
+                    type="text"
+                    value={originatedTime}
+                    onChange={(e) => setOriginatedTime(e.target.value)}
+                    placeholder="11:30"
+                    title="Time Originated"
+                    className="w-14 text-center font-mono text-xs px-1 py-0.5 border border-slate-300 rounded bg-slate-50"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
 
           {/* Row 1: Auto Number, Status & Priority */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-white p-3.5 rounded border border-slate-200">

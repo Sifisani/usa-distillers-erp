@@ -70,6 +70,11 @@ interface JobCardDetailModalProps {
   onAddComment: (card: JobCard, author: string, message: string) => Promise<void>;
   onAddHandover?: (card: JobCard, handover: Omit<ShiftHandoverLog, 'id' | 'timestamp'>) => Promise<void>;
   onPrint: (card: JobCard) => void;
+  onAcceptRequisition?: (card: JobCard, params: { supervisorName: string; artisanName: string; trade?: TechnicalTrade; shift?: ShiftGroup; targetDate?: string; notes?: string }) => Promise<void>;
+  onAddSparePart?: (card: JobCard, part: { partDescription: string; quantity: number; partNumber?: string; storeVoucherNumber?: string; requestedBy: string; markAsPendingSpares?: boolean; unitCostEmalangeni?: number }) => Promise<void>;
+  onIssueSparePart?: (card: JobCard, partId: string, params: { issuedBy: string; storeVoucherNumber: string }) => Promise<void>;
+  onRecordHandback?: (card: JobCard, params: { supervisorName: string; artisanName: string; completionDate: string; completionTime: string; hours: number; handbackNotes: string; trade?: TechnicalTrade }) => Promise<void>;
+  onHODCloseOut?: (card: JobCard, params: { hodName: string; notes?: string }) => Promise<void>;
 }
 
 const STAGES: JobCardStatus[] = ['Draft', 'In Progress', 'Pending Spares', 'Completed'];
@@ -84,10 +89,48 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
   onAddLabor,
   onAddComment,
   onAddHandover,
-  onPrint
+  onPrint,
+  onAcceptRequisition,
+  onAddSparePart,
+  onIssueSparePart,
+  onRecordHandback,
+  onHODCloseOut
 }) => {
   const { userProfile } = useAuth();
-  const [activeTab, setActiveTab] = useState<'details' | 'labor' | 'handovers' | 'chatter'>('details');
+  const [activeTab, setActiveTab] = useState<'details' | 'spares' | 'handback' | 'labor' | 'handovers' | 'chatter'>('details');
+
+  // Accept & Assign state
+  const [showAcceptForm, setShowAcceptForm] = useState(false);
+  const [acceptingSupervisor, setAcceptingSupervisor] = useState(userProfile?.displayName || 'Sam Ngubeni (Maintenance Supervisor)');
+  const [selectedArtisan, setSelectedArtisan] = useState('Phumelele Maseko (Mechanical Fitter)');
+  const [assignTrade, setAssignTrade] = useState<TechnicalTrade>('Mechanical Fitter');
+  const [assignShift, setAssignShift] = useState<ShiftGroup>('Shift A');
+  const [assignTargetDate, setAssignTargetDate] = useState('');
+  const [assignNotes, setAssignNotes] = useState('');
+  const [isAccepting, setIsAccepting] = useState(false);
+
+  // Spares Requisition state
+  const [partDescription, setPartDescription] = useState('');
+  const [partQty, setPartQty] = useState('1');
+  const [partNumber, setPartNumber] = useState('');
+  const [storeVoucherNumber, setStoreVoucherNumber] = useState('');
+  const [markPendingSpares, setMarkPendingSpares] = useState(false);
+  const [isAddingSpare, setIsAddingSpare] = useState(false);
+  const [issuingPartId, setIssuingPartId] = useState<string | null>(null);
+  const [issueVoucher, setIssueVoucher] = useState('');
+
+  // Handback state
+  const [handbackArtisan, setHandbackArtisan] = useState('');
+  const [handbackDate, setHandbackDate] = useState(new Date().toISOString().split('T')[0]);
+  const [handbackTime, setHandbackTime] = useState('15:30');
+  const [handbackHours, setHandbackHours] = useState('2.5');
+  const [handbackNotes, setHandbackNotes] = useState('');
+  const [isLoggingHandbackReceipt, setIsLoggingHandbackReceipt] = useState(false);
+
+  // HOD Close-Out state
+  const [hodName, setHodName] = useState(userProfile?.displayName || 'Antonio Miranda (Engineering Manager)');
+  const [hodNotes, setHodNotes] = useState('Work inspected and verified operational. Requisition signed off.');
+  const [isClosingHOD, setIsClosingHOD] = useState(false);
 
   // Labor log form state
   const [laborTech, setLaborTech] = useState(userProfile?.displayName || 'Phumelele Maseko (Mechanical Fitter)');
@@ -196,6 +239,93 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
     }
   };
 
+  const handleAcceptSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!onAcceptRequisition) return;
+    setIsAccepting(true);
+    try {
+      await onAcceptRequisition(card, {
+        supervisorName: acceptingSupervisor,
+        artisanName: selectedArtisan,
+        trade: assignTrade,
+        shift: assignShift,
+        targetDate: assignTargetDate,
+        notes: assignNotes
+      });
+      setShowAcceptForm(false);
+    } finally {
+      setIsAccepting(false);
+    }
+  };
+
+  const handleAddSpareSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!onAddSparePart || !partDescription.trim()) return;
+    setIsAddingSpare(true);
+    try {
+      await onAddSparePart(card, {
+        partDescription: partDescription.trim(),
+        quantity: Number(partQty) || 1,
+        partNumber: partNumber.trim(),
+        storeVoucherNumber: storeVoucherNumber.trim(),
+        requestedBy: userProfile?.displayName || 'Maintenance Supervisor',
+        markAsPendingSpares: markPendingSpares
+      });
+      setPartDescription('');
+      setPartNumber('');
+      setStoreVoucherNumber('');
+      setMarkPendingSpares(false);
+    } finally {
+      setIsAddingSpare(false);
+    }
+  };
+
+  const handleIssueSpareSubmit = async (partId: string) => {
+    if (!onIssueSparePart) return;
+    try {
+      await onIssueSparePart(card, partId, {
+        issuedBy: userProfile?.displayName || 'Elliot Mhlongo (Stores Manager)',
+        storeVoucherNumber: issueVoucher || 'SV-DIRECT'
+      });
+      setIssuingPartId(null);
+      setIssueVoucher('');
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleHandbackSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!onRecordHandback) return;
+    setIsLoggingHandbackReceipt(true);
+    try {
+      await onRecordHandback(card, {
+        supervisorName: userProfile?.displayName || 'Maintenance Supervisor',
+        artisanName: handbackArtisan || card.assignedTo || 'Artisan',
+        completionDate: handbackDate,
+        completionTime: handbackTime,
+        hours: Number(handbackHours) || 1,
+        handbackNotes: handbackNotes.trim()
+      });
+    } finally {
+      setIsLoggingHandbackReceipt(false);
+    }
+  };
+
+  const handleHODSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!onHODCloseOut) return;
+    setIsClosingHOD(true);
+    try {
+      await onHODCloseOut(card, {
+        hodName: hodName || 'Antonio Miranda (Engineering Manager)',
+        notes: hodNotes
+      });
+    } finally {
+      setIsClosingHOD(false);
+    }
+  };
+
   const getPriorityBadge = (priority: Priority) => {
     switch (priority) {
       case 'Emergency':
@@ -217,13 +347,13 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 overflow-y-auto">
       <div className="bg-white rounded-lg shadow-2xl border border-slate-300 w-full max-w-4xl overflow-hidden my-6 flex flex-col max-h-[92vh] animate-in fade-in zoom-in-95 duration-150">
-        {/* Odoo Control Panel Header with Pipeline Stage Tracker */}
+        {/* USA Distillers Control Panel Header with Pipeline Stage Tracker */}
         <div className="bg-slate-100 px-5 py-3 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
           {/* Action Buttons Left */}
-          <div className="flex items-center space-x-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => onEdit(card)}
-              className="px-3 py-1.5 rounded bg-[#714B67] hover:bg-[#5b3c53] text-white text-xs font-semibold shadow-xs flex items-center gap-1.5 cursor-pointer transition"
+              className="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-800 text-white text-xs font-semibold shadow-xs flex items-center gap-1.5 cursor-pointer transition"
             >
               <Edit className="w-3.5 h-3.5" />
               <span>Edit</span>
@@ -231,11 +361,53 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
 
             <button
               onClick={() => onPrint(card)}
-              className="px-3 py-1.5 rounded border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium flex items-center gap-1.5 cursor-pointer transition"
+              className="px-3 py-1.5 rounded border border-emerald-800/40 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition"
             >
-              <Printer className="w-3.5 h-3.5" />
-              <span>Print Work Order</span>
+              <Printer className="w-3.5 h-3.5 text-emerald-700" />
+              <span>Print Works Requisition</span>
             </button>
+
+            {/* SUPERVISOR WORKFLOW ACTION: Accept & Assign */}
+            {(!card.acceptedBy || card.requisitionStage === 'Pending Acceptance' || card.status === 'Draft') && (
+              <button
+                onClick={() => setShowAcceptForm(!showAcceptForm)}
+                className="px-3.5 py-1.5 rounded bg-[#1b4332] hover:bg-[#143326] text-white text-xs font-bold shadow-xs flex items-center gap-1.5 cursor-pointer transition animate-pulse"
+              >
+                <Check className="w-3.5 h-3.5 text-emerald-300" />
+                <span>Accept Requisition & Assign Artisan</span>
+              </button>
+            )}
+
+            {/* SUPERVISOR WORKFLOW ACTION: Request Spares */}
+            <button
+              onClick={() => setActiveTab('spares')}
+              className="px-3 py-1.5 rounded border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition"
+            >
+              <Package className="w-3.5 h-3.5 text-amber-700" />
+              <span>Request Spares ({card.sparesRequested?.length || 0})</span>
+            </button>
+
+            {/* SUPERVISOR WORKFLOW ACTION: Record Artisan Slip Handback */}
+            {card.status === 'In Progress' && (
+              <button
+                onClick={() => setActiveTab('handback')}
+                className="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs flex items-center gap-1.5 cursor-pointer transition"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Record Slip Handback</span>
+              </button>
+            )}
+
+            {/* SUPERVISOR WORKFLOW ACTION: HOD Close-Out */}
+            {(card.requisitionStage === 'Artisan Completed' || (card.status === 'In Progress' && card.totalLaborHours > 0)) && !card.hodSignedBy && (
+              <button
+                onClick={() => setActiveTab('handback')}
+                className="px-3.5 py-1.5 rounded bg-purple-700 hover:bg-purple-800 text-white text-xs font-bold shadow-xs flex items-center gap-1.5 cursor-pointer transition"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5 text-purple-200" />
+                <span>HOD Digital Sign-Off</span>
+              </button>
+            )}
 
             {/* Stage Quick Actions */}
             {card.status === 'Draft' && (
@@ -328,11 +500,19 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                   <span className="text-xl font-mono font-bold text-slate-900 tracking-tight">
                     {card.jobCardNumber}
                   </span>
+                  <span className="px-2.5 py-0.5 rounded bg-red-50 border border-red-300 text-red-600 font-mono font-black text-xs shadow-2xs">
+                    WORKS REQUISITION #{card.workOrderNumber || card.jobCardNumber.replace(/[^0-9]/g, '') || '188499'}
+                  </span>
+                  {card.requisitionType && (
+                    <span className="px-2 py-0.5 rounded bg-emerald-100 border border-emerald-300 text-emerald-800 font-bold text-xs">
+                      {card.requisitionType}
+                    </span>
+                  )}
                   <span className={`px-2 py-0.5 rounded text-xs border ${getPriorityBadge(card.priority)}`}>
                     {card.priority === 'Emergency' && <AlertTriangle className="w-3 h-3 inline mr-1 text-rose-600" />}
                     {card.priority} Priority
                   </span>
-                  <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-purple-50 text-[#714B67] border border-purple-200">
+                  <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200">
                     {card.status}
                   </span>
 
@@ -442,25 +622,49 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
             </div>
           </div>
 
-          {/* Tab Navigation: Details, Labor Hours, Shift Handovers, Chatter */}
-          <div className="flex border-b border-slate-200 bg-white px-4 pt-2 rounded-t border-t border-l border-r">
+          {/* Tab Navigation: Details, Spares, Handback, Labor, Handovers, Chatter */}
+          <div className="flex border-b border-slate-200 bg-white px-4 pt-2 rounded-t border-t border-l border-r overflow-x-auto">
             <button
               onClick={() => setActiveTab('details')}
-              className={`py-2 px-4 text-xs font-semibold border-b-2 -mb-px transition cursor-pointer flex items-center gap-1.5 ${
+              className={`py-2 px-3 text-xs font-semibold border-b-2 -mb-px transition cursor-pointer flex items-center gap-1.5 shrink-0 ${
                 activeTab === 'details'
-                  ? 'border-[#714B67] text-[#714B67]'
+                  ? 'border-[#1b4332] text-[#1b4332]'
                   : 'border-transparent text-slate-500 hover:text-slate-800'
               }`}
             >
               <FileText className="w-3.5 h-3.5" />
-              <span>Details</span>
+              <span>Details & Routing</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('spares')}
+              className={`py-2 px-3 text-xs font-semibold border-b-2 -mb-px transition cursor-pointer flex items-center gap-1.5 shrink-0 ${
+                activeTab === 'spares'
+                  ? 'border-[#1b4332] text-[#1b4332]'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <Package className="w-3.5 h-3.5" />
+              <span>Stores Spares ({card.sparesRequested?.length || 0})</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('handback')}
+              className={`py-2 px-3 text-xs font-semibold border-b-2 -mb-px transition cursor-pointer flex items-center gap-1.5 shrink-0 ${
+                activeTab === 'handback'
+                  ? 'border-[#1b4332] text-[#1b4332]'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              <span>Slip Handback & HOD {card.completedByArtisan ? '✓' : ''}</span>
             </button>
 
             <button
               onClick={() => setActiveTab('labor')}
-              className={`py-2 px-4 text-xs font-semibold border-b-2 -mb-px transition cursor-pointer flex items-center gap-1.5 ${
+              className={`py-2 px-3 text-xs font-semibold border-b-2 -mb-px transition cursor-pointer flex items-center gap-1.5 shrink-0 ${
                 activeTab === 'labor'
-                  ? 'border-[#714B67] text-[#714B67]'
+                  ? 'border-[#1b4332] text-[#1b4332]'
                   : 'border-transparent text-slate-500 hover:text-slate-800'
               }`}
             >
@@ -470,9 +674,9 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
 
             <button
               onClick={() => setActiveTab('handovers')}
-              className={`py-2 px-4 text-xs font-semibold border-b-2 -mb-px transition cursor-pointer flex items-center gap-1.5 ${
+              className={`py-2 px-3 text-xs font-semibold border-b-2 -mb-px transition cursor-pointer flex items-center gap-1.5 shrink-0 ${
                 activeTab === 'handovers'
-                  ? 'border-[#714B67] text-[#714B67]'
+                  ? 'border-[#1b4332] text-[#1b4332]'
                   : 'border-transparent text-slate-500 hover:text-slate-800'
               }`}
             >
@@ -482,9 +686,9 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
 
             <button
               onClick={() => setActiveTab('chatter')}
-              className={`py-2 px-4 text-xs font-semibold border-b-2 -mb-px transition cursor-pointer flex items-center gap-1.5 ${
+              className={`py-2 px-3 text-xs font-semibold border-b-2 -mb-px transition cursor-pointer flex items-center gap-1.5 shrink-0 ${
                 activeTab === 'chatter'
-                  ? 'border-[#714B67] text-[#714B67]'
+                  ? 'border-[#1b4332] text-[#1b4332]'
                   : 'border-transparent text-slate-500 hover:text-slate-800'
               }`}
             >
@@ -530,6 +734,367 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                     {new Date(card.createdAt).toLocaleString()}
                   </span>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB: SPARES & STORES WITHDRAWAL */}
+          {activeTab === 'spares' && (
+            <div className="bg-white p-5 rounded-b border border-slate-200 shadow-2xs space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                <div>
+                  <h4 className="text-xs font-bold text-slate-800 uppercase flex items-center gap-1.5">
+                    <Package className="w-4 h-4 text-amber-600" />
+                    Stores Spares Withdrawal & Inventory Link
+                  </h4>
+                  <p className="text-[11px] text-slate-500">
+                    Artisans present Work Order #{card.workOrderNumber || card.jobCardNumber} to Stores (Elliot Mhlongo) to withdraw parts.
+                  </p>
+                </div>
+              </div>
+
+              {/* Add Spares Requisition Form */}
+              <form onSubmit={handleAddSpareSubmit} className="p-3.5 bg-amber-50/50 border border-amber-200 rounded-lg space-y-3">
+                <div className="font-bold text-xs text-amber-950 flex items-center gap-1.5">
+                  <PlusCircle className="w-3.5 h-3.5 text-amber-700" />
+                  <span>Request Spare Part from Stores</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5 text-xs">
+                  <div className="sm:col-span-2">
+                    <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                      Part Description *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={partDescription}
+                      onChange={(e) => setPartDescription(e.target.value)}
+                      placeholder="e.g. Mechanical Seal 45mm Tungsten Carbide / Bearings 6308"
+                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                      Quantity Required *
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      required
+                      value={partQty}
+                      onChange={(e) => setPartQty(e.target.value)}
+                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                      Part # / Bin Location
+                    </label>
+                    <input
+                      type="text"
+                      value={partNumber}
+                      onChange={(e) => setPartNumber(e.target.value)}
+                      placeholder="e.g. PN-SEAL-45 / Bin B3"
+                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between pt-1">
+                  <label className="flex items-center space-x-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={markPendingSpares}
+                      onChange={(e) => setMarkPendingSpares(e.target.checked)}
+                      className="text-amber-600 focus:ring-amber-500 rounded"
+                    />
+                    <span className="text-xs font-semibold text-amber-900">
+                      Hold Work Order as &quot;Pending Spares&quot; (Waiting for Stores / Procurement)
+                    </span>
+                  </label>
+
+                  <button
+                    type="submit"
+                    disabled={isAddingSpare}
+                    className="px-4 py-1.5 bg-amber-700 hover:bg-amber-800 text-white font-bold text-xs rounded transition shadow-xs cursor-pointer"
+                  >
+                    {isAddingSpare ? 'Requesting...' : 'Submit Spares Requisition'}
+                  </button>
+                </div>
+              </form>
+
+              {/* Table of Requested Parts */}
+              <div>
+                <h5 className="text-[11px] font-bold text-slate-600 uppercase mb-2">
+                  Parts Requisitioned for this Work Order ({card.sparesRequested?.length || 0})
+                </h5>
+
+                {(!card.sparesRequested || card.sparesRequested.length === 0) ? (
+                  <div className="p-4 bg-slate-50 border border-dashed border-slate-200 rounded text-center text-slate-400 text-xs">
+                    No spare parts have been requisitioned for this work order yet.
+                  </div>
+                ) : (
+                  <div className="border border-slate-200 rounded overflow-hidden">
+                    <table className="w-full text-xs text-left">
+                      <thead className="bg-slate-100 text-slate-600 text-[10px] uppercase font-bold border-b border-slate-200">
+                        <tr>
+                          <th className="p-2">Part Description</th>
+                          <th className="p-2 text-center">Qty</th>
+                          <th className="p-2">Part # / Bin</th>
+                          <th className="p-2">Status</th>
+                          <th className="p-2">Store Voucher</th>
+                          <th className="p-2 text-right">Action (Stores)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200 bg-white">
+                        {card.sparesRequested.map((part) => (
+                          <tr key={part.id} className="hover:bg-slate-50">
+                            <td className="p-2 font-semibold text-slate-800">{part.partDescription}</td>
+                            <td className="p-2 text-center font-mono font-bold">{part.quantity}</td>
+                            <td className="p-2 font-mono text-slate-500">{part.partNumber || '—'}</td>
+                            <td className="p-2">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                part.status === 'Issued' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                              }`}>
+                                {part.status.toUpperCase()}
+                              </span>
+                            </td>
+                            <td className="p-2 font-mono text-slate-600">{part.storeVoucherNumber || 'Pending'}</td>
+                            <td className="p-2 text-right">
+                              {part.status !== 'Issued' ? (
+                                issuingPartId === part.id ? (
+                                  <div className="flex items-center justify-end space-x-1">
+                                    <input
+                                      type="text"
+                                      value={issueVoucher}
+                                      onChange={(e) => setIssueVoucher(e.target.value)}
+                                      placeholder="Voucher #"
+                                      className="w-20 text-xs px-1 py-0.5 border rounded font-mono"
+                                    />
+                                    <button
+                                      onClick={() => handleIssueSpareSubmit(part.id)}
+                                      className="px-2 py-0.5 bg-emerald-600 text-white rounded text-[10px] font-bold cursor-pointer"
+                                    >
+                                      Confirm
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    onClick={() => setIssuingPartId(part.id)}
+                                    className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[10px] font-bold cursor-pointer"
+                                  >
+                                    Issue from Stores
+                                  </button>
+                                )
+                              ) : (
+                                <span className="text-emerald-700 text-[10px] font-bold">Issued by {part.issuedBy || 'Stores'}</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* TAB: ARTISAN HANDBACK & HOD CLOSE-OUT */}
+          {activeTab === 'handback' && (
+            <div className="bg-white p-5 rounded-b border border-slate-200 shadow-2xs space-y-5">
+              {/* Slip Handback Section */}
+              <div className="p-4 bg-blue-50/50 border border-blue-200 rounded-lg space-y-3">
+                <div className="flex items-center justify-between border-b border-blue-200 pb-2">
+                  <div className="flex items-center space-x-2">
+                    <FileText className="w-4 h-4 text-blue-700" />
+                    <h4 className="font-bold text-xs uppercase text-blue-950">
+                      Record Physical Slip Handback (Returned to Office)
+                    </h4>
+                  </div>
+                  {card.completedByArtisan && (
+                    <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                      HANDBACK RECORDED
+                    </span>
+                  )}
+                </div>
+
+                {card.completedByArtisan ? (
+                  <div className="p-3 bg-white border border-emerald-200 rounded text-xs space-y-1">
+                    <div className="font-bold text-emerald-900">
+                      ✓ Completed by {card.completedByArtisan} on {card.completionDate} at {card.completionTime || '16:00'} ({card.completionHours} hrs logged)
+                    </div>
+                    {card.artisanHandbackNotes && (
+                      <div className="text-slate-600 font-serif italic">
+                        Notes on Slip: &quot;{card.artisanHandbackNotes}&quot;
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <form onSubmit={handleHandbackSubmit} className="space-y-3 text-xs">
+                    <p className="text-[11px] text-slate-600">
+                      When the artisan returns the physical paper slip with handwritten hours and signature, enter them here:
+                    </p>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                          Artisan Name *
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={handbackArtisan || card.assignedTo}
+                          onChange={(e) => setHandbackArtisan(e.target.value)}
+                          placeholder="Phumelele Maseko"
+                          className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white font-medium"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                          Date Completed *
+                        </label>
+                        <input
+                          type="date"
+                          required
+                          value={handbackDate}
+                          onChange={(e) => setHandbackDate(e.target.value)}
+                          className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                          Time Completed
+                        </label>
+                        <input
+                          type="text"
+                          value={handbackTime}
+                          onChange={(e) => setHandbackTime(e.target.value)}
+                          placeholder="15:30"
+                          className="w-full text-xs font-mono px-2.5 py-1.5 border border-slate-300 rounded bg-white"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                          Hours on Slip *
+                        </label>
+                        <input
+                          type="number"
+                          step="0.5"
+                          min="0.5"
+                          required
+                          value={handbackHours}
+                          onChange={(e) => setHandbackHours(e.target.value)}
+                          placeholder="2.5"
+                          className="w-full text-xs font-mono font-bold px-2.5 py-1.5 border border-slate-300 rounded bg-white"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                        Handwritten Work Notes from Artisan *
+                      </label>
+                      <textarea
+                        required
+                        rows={2}
+                        value={handbackNotes}
+                        onChange={(e) => setHandbackNotes(e.target.value)}
+                        placeholder="e.g. Replaced worn bearings and mechanical seal. Aligned coupling. Test ran pump with operator Atanasio with normal pressure."
+                        className="w-full text-xs font-serif p-2 border border-slate-300 rounded bg-white"
+                      />
+                    </div>
+
+                    <div className="flex justify-end pt-1">
+                      <button
+                        type="submit"
+                        disabled={isLoggingHandbackReceipt}
+                        className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded font-bold text-xs shadow-xs cursor-pointer"
+                      >
+                        {isLoggingHandbackReceipt ? 'Saving Handback...' : 'Save Slip Handback & Log Hours'}
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+
+              {/* HOD Close-Out Section */}
+              <div className="p-4 bg-purple-50/50 border border-purple-200 rounded-lg space-y-3">
+                <div className="flex items-center justify-between border-b border-purple-200 pb-2">
+                  <div className="flex items-center space-x-2">
+                    <CheckCircle2 className="w-4 h-4 text-purple-700" />
+                    <h4 className="font-bold text-xs uppercase text-purple-950">
+                      HOD Final Digital Sign-Off (Antonio Miranda / Engineering Manager)
+                    </h4>
+                  </div>
+                  {card.hodSignedBy && (
+                    <span className="px-2 py-0.5 rounded bg-purple-600 text-white text-[10px] font-black uppercase tracking-wider">
+                      OFFICIALLY CLOSED
+                    </span>
+                  )}
+                </div>
+
+                {card.hodSignedBy ? (
+                  <div className="p-3 bg-white border border-purple-200 rounded text-xs space-y-1">
+                    <div className="font-bold text-purple-900">
+                      🎖️ Signed Off by {card.hodSignedBy}
+                    </div>
+                    {card.hodDigitalSignOff?.notes && (
+                      <div className="text-slate-600 italic">
+                        &quot;{card.hodDigitalSignOff.notes}&quot;
+                      </div>
+                    )}
+                    <div className="text-[10px] text-slate-400 font-mono">
+                      Timestamp: {new Date(card.hodDigitalSignOff?.signedAt || card.updatedAt).toLocaleString()}
+                    </div>
+                  </div>
+                ) : (
+                  <form onSubmit={handleHODSubmit} className="space-y-3 text-xs">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                          HOD Name
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={hodName}
+                          onChange={(e) => setHodName(e.target.value)}
+                          className="w-full text-xs font-bold px-2.5 py-1.5 border border-purple-300 rounded bg-white text-purple-950"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                          Close-Out Remarks
+                        </label>
+                        <input
+                          type="text"
+                          value={hodNotes}
+                          onChange={(e) => setHodNotes(e.target.value)}
+                          className="w-full text-xs px-2.5 py-1.5 border border-purple-300 rounded bg-white"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end pt-1">
+                      <button
+                        type="submit"
+                        disabled={isClosingHOD}
+                        className="px-5 py-2 bg-purple-700 hover:bg-purple-800 text-white rounded font-bold text-xs shadow-xs cursor-pointer flex items-center gap-1.5"
+                      >
+                        <Check className="w-3.5 h-3.5 text-purple-300" />
+                        <span>{isClosingHOD ? 'Closing Work Order...' : 'Digitally Sign & Close Work Order'}</span>
+                      </button>
+                    </div>
+                  </form>
+                )}
               </div>
             </div>
           )}

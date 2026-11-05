@@ -127,6 +127,225 @@ export interface JobCard {
     starterType?: StarterType;
     plantArea?: PlantArea;
   };
+
+  // Official Works Requisition fields (from physical slip WO #188499)
+  workOrderNumber?: string;
+  requisitionType?: 'Normal' | 'Call Out' | 'Stop Day';
+  costCenter?: string;
+  dangerTagRequired?: boolean;
+  dangerTagNumber?: string;
+  recipientDepartment?: string;
+  originatingDepartment?: string;
+  originatedBy?: string;
+  originatedTime?: string;
+  originatedSignature?: string;
+  physicalSlipLogged?: boolean;
+
+  // Supervisor & Manager Workflow
+  requisitionStage?: RequisitionStage;
+  assignedSupervisor?: string;
+  acceptedAt?: string;
+  acceptedBy?: string;
+  completedByArtisan?: string;
+  artisanSignature?: string;
+  artisanHandbackNotes?: string;
+  completionDate?: string;
+  completionTime?: string;
+  completionHours?: number;
+  sparesRequested?: SparePartItem[];
+  hodSignedBy?: string;
+  hodDigitalSignOff?: {
+    signedBy: string;
+    signedAt: string;
+    notes?: string;
+  };
+  qcSignedBy?: string;
+}
+
+export type RequisitionStage =
+  | 'Pending Acceptance'
+  | 'Accepted'
+  | 'In Progress'
+  | 'Pending Spares'
+  | 'Artisan Completed'
+  | 'HOD Closed'
+  | 'Cancelled';
+
+export interface SparePartItem {
+  id: string;
+  partDescription: string;
+  quantity: number;
+  partNumber?: string;
+  storeVoucherNumber?: string;
+  requestedBy: string;
+  requestedAt: string;
+  issuedBy?: string;
+  issuedAt?: string;
+  status: 'Requested' | 'Issued' | 'Out of Stock';
+  unitCostEmalangeni?: number;
+}
+
+export interface DailyPlantReport {
+  id: string;
+  reportDate: string;
+  reportedBy: string;
+  createdAt: string;
+  updatedAt: string;
+  status: 'Draft' | 'Submitted' | 'Verified';
+
+  // Section 1: Water Plant
+  waterPlant: {
+    rawWtrTds: number;
+    waterIn: number;
+    waterOut: number;
+    waterInNp: number;
+    waterOutNp: number;
+    stTankLevel: number;
+    fermTankLevel: number;
+    softHard: number;
+    roTankLevel: number;
+    dam1Ph: number;
+    hotwellTemp: number;
+  };
+
+  // Section 2: Water Consumption
+  waterConsumption: {
+    bleedOffDist: number;
+    bleedOffEvaps: number;
+    bleedOffFerm: number;
+    roPlant: number;
+    coolingTower: number;
+    hWell: number;
+    distCt: number;
+    evapsCt: number;
+    fermTaCt: number;
+    mahlabaneni24h: number;
+    fermentation24h: number;
+    community: number;
+    bCry: number;
+    blrPot: number;
+    usa: number;
+  };
+
+  // Section 3: Steam Usage & Coal
+  steamUsage: {
+    boiler1Steam: number;
+    boiler1Tds: number;
+    boiler2Steam: number;
+    boiler2Tds: number;
+    boiler3Steam: number;
+    boiler3Tds: number;
+    totalSteam: number;
+  };
+
+  coal: {
+    stockTonnes: number;
+    daysRemaining: number;
+    deliveredTonnes: number;
+    usedTonnes: number;
+    weLoads: number;
+  };
+
+  sootblowing: {
+    boiler1: number;
+    boiler2: number;
+    boiler3: number;
+  };
+
+  // Section 4: Cooling Towers
+  coolingTowers: {
+    limits: { hardness: string; tds: string; ph: string; alk: string; chlor: string };
+    dist: { hardness: number; tds: number; ph: number; alk: number; chlor: number };
+    fermTa: { hardness: number; tds: number; ph: number; alk: number; chlor: number };
+    ro: { hardness: number; tds: number; ph: number; alk: number; chlor: number };
+    temps: {
+      no1In: number; no1Out: number; no1Delta: number;
+      no2EvIn: number; no2EvOut: number; no2EvDelta: number;
+      no2FerIn: number; no2FerOut: number; no2FerDelta: number;
+      no3In: number; no3Out: number; no3Delta: number;
+    };
+  };
+
+  // Section 5: Fermentation & Chemicals
+  fermentation: {
+    fvTransferring: string;
+    fvAlcoholPct: number;
+    noFermentersTrans: number;
+    beerAgeHours: number;
+  };
+
+  chemicals: {
+    h3598Dist: number; h3598Ferm: number; h3598Evaps: number;
+    h3300Dist: string; h3300Ferm: string;
+    h3341Dist: string; h3341Ferm: string;
+    h3533ADist: string; h3533AFerm: string;
+  };
+
+  // Section 6: Molasses Inventory & Balance
+  molasses: {
+    aveTempC: number;
+    molassesTanksTonnes: number;
+    molassesGreenTankTonnes: number;
+    molassesDamTonnes: number;
+    aquaDamsTonnes: number;
+    cmsTankTonnes: number;
+    stockMillTonnes: number;
+    producedTonnes: number;
+    molassesLoads: number;
+    molRelNotes: number;
+    loadsExMill: number;
+    tonnesExMill: number;
+    loadsExSa: number;
+    tonnesExSa: number;
+    loadsExSaWedsThurs: number;
+    loadsExSaToDate: number;
+    totalReceivedTonnes: number;
+    molassesOnSiteTonnes: number;
+  };
+
+  // Section 7: Distillation & Alcohol Tanks
+  distillation: {
+    totalWashBeerFeedLitres: number;
+    indStorageLitres: number;
+    indIncreaseLitres: number;
+    wcAlcFeed: number;
+    wcWtrFeed: number;
+    potProductionLitres: number;
+    totalProductionLitres: number;
+    lgFeedRateLhr: number;
+    lgTanksLitres: number;
+    lgProductionLitres: number;
+    beerColumnDays: string;
+    lowGradeALitres: number;
+    rumStockLitres: number;
+    rumProductionLitres: number;
+    toppingMeter: string;
+  };
+
+  alcoholTanks: {
+    storage1: number;
+    storage2: number;
+    storage3: number;
+    day1: number;
+    day2: number;
+    day3: number;
+    day4: number;
+    day5: number;
+    day6: number;
+    day7: number;
+    day8: number;
+    day9: number;
+    rum1: number;
+    rum2: number;
+    day12: number;
+    day13: number;
+    totalAlcoholLitres: number;
+  };
+
+  dieselYeast: {
+    dieselLitres: number;
+    yeastKg: number;
+  };
 }
 
 export interface Equipment {

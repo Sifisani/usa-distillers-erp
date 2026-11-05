@@ -20,6 +20,7 @@ interface HeaderProps {
   searchQuery: string;
   emergencyCount: number;
   onOpenLogin: () => void;
+  onSelectView?: (view: any) => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -28,57 +29,75 @@ export const Header: React.FC<HeaderProps> = ({
   onSearchChange,
   searchQuery,
   emergencyCount,
-  onOpenLogin
+  onOpenLogin,
+  onSelectView
 }) => {
   const { userProfile, logout, currentUser } = useAuth();
   const [showUserDropdown, setShowUserDropdown] = useState(false);
 
   const getBreadcrumbs = () => {
     switch (currentView) {
+      case 'launchpad':
+        return ['USA Distillers', 'Enterprise Department Launchpad'];
+      case 'reports':
+        return ['Operations', 'Daily Plant Report Engine'];
       case 'dashboard':
-        return ['Maintenance Operations', 'Executive Dashboard'];
+        return ['Operations', 'Executive Operations Dashboard'];
       case 'jobcards':
-        return subView ? ['Maintenance Operations', 'Job Cards', subView] : ['Maintenance Operations', 'Job Cards'];
+        return subView ? ['Operations', 'Works Requisitions (Job Cards)', subView] : ['Operations', 'Works Requisitions (Job Cards)'];
+      case 'spares':
+        return ['Stores & Inventory', 'Spares Requisitions (Elliot Mhlongo Desk)'];
+      case 'slips':
+        return ['Operations', 'Physical Works Requisitions (Paper Book Intake Archive)'];
       case 'equipment':
-        return ['Asset Management', 'Equipment Registry'];
+        return ['Maintenance', 'Plant Machinery & Motors (105 Assets)'];
       case 'organogram':
         return ['Executive Governance', 'Company Organogram & Leadership'];
       case 'settings':
         return ['Configuration', 'Plant & System Settings'];
       default:
-        return ['Maintenance Operations', 'Job Cards'];
+        return ['Operations', 'Works Requisitions'];
     }
   };
 
   const breadcrumbs = getBreadcrumbs();
 
   return (
-    <header className="bg-[#714B67] text-white select-none z-30 sticky top-0 shadow-md">
-      {/* Odoo Enterprise Primary Navigation Bar */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-[#5e3b55]">
+    <header className="bg-[#1b4332] text-white select-none z-30 sticky top-0 shadow-md">
+      {/* USA Distillers Primary Navigation Bar */}
+      <div className="flex items-center justify-between px-3 py-2 border-b border-[#143326]">
         {/* Left: App Switcher & Brand */}
         <div className="flex items-center space-x-3">
           <button
-            title="Odoo App Launcher"
-            className="p-1.5 hover:bg-white/10 rounded transition cursor-pointer text-white/90 hover:text-white"
+            title="USA Distillers Department Launchpad"
+            onClick={() => onSelectView?.('launchpad')}
+            className="p-1.5 hover:bg-white/10 rounded transition cursor-pointer text-emerald-300 hover:text-white flex items-center gap-1.5"
           >
             <Grid className="w-5 h-5" />
+            <span className="hidden sm:inline text-xs font-bold uppercase tracking-wider text-emerald-300">
+              Apps
+            </span>
           </button>
 
-          <div className="flex items-center space-x-2">
-            <div className="w-7 h-7 rounded bg-amber-500/20 border border-amber-400/40 flex items-center justify-center text-amber-300 font-bold text-xs shadow-inner">
-              <Wrench className="w-4 h-4 text-amber-300" />
-            </div>
+          <div
+            onClick={() => onSelectView?.('launchpad')}
+            className="flex items-center space-x-2 cursor-pointer group"
+          >
+            <img
+              src="/assets/aistudio/Screenshot_2024-01-26_104006_cd1bebac.png"
+              alt="USA Distillers"
+              className="h-7 w-auto object-contain rounded bg-[#1e4620] p-0.5 border border-emerald-900/50 shadow-inner group-hover:scale-105 transition-transform"
+            />
             <div className="leading-tight">
-              <span className="font-bold tracking-tight text-sm text-white">USA DISTILLERS</span>
-              <span className="ml-1.5 text-[10px] font-semibold bg-white/15 px-1.5 py-0.5 rounded text-white/90">
-                ERP v17
+              <span className="font-black tracking-tight text-sm text-white">USA DISTILLERS</span>
+              <span className="ml-1.5 text-[9px] font-bold bg-emerald-500/30 px-1.5 py-0.5 rounded text-emerald-200 border border-emerald-400/30">
+                ERP
               </span>
             </div>
           </div>
 
           <div className="hidden md:flex items-center text-xs text-white/60 space-x-1 pl-4 border-l border-white/20">
-            <span className="text-white/80 font-medium">Maintenance & Engineering</span>
+            <span className="text-emerald-200/90 font-medium">Big Bend Operations</span>
           </div>
         </div>
 
