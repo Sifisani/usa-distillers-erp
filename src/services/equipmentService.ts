@@ -8,7 +8,7 @@ import {
   onSnapshot
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
-import { Equipment } from '../types';
+import { Equipment, EquipmentModificationLog } from '../types';
 import { eventBus, JobCardStatusChangedPayload } from '../core/events/eventBus';
 
 const COLLECTION_NAME = 'equipment';
@@ -84,6 +84,7 @@ export function subscribeEquipment(
           overloadAmps: typeof data.overloadAmps === 'number' ? data.overloadAmps : undefined,
           starterType: data.starterType || undefined,
           plantArea: data.plantArea || undefined,
+          modificationHistory: Array.isArray(data.modificationHistory) ? data.modificationHistory : [],
           createdAt: data.createdAt || new Date().toISOString(),
           updatedAt: data.updatedAt || new Date().toISOString()
         };
@@ -164,6 +165,60 @@ export async function deleteEquipment(id: string): Promise<void> {
     await deleteDoc(docRef);
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `${COLLECTION_NAME}/${id}`);
+    throw error;
+  }
+}
+
+/**
+ * Updates plant machinery with mandatory engineering audit trail and lineage.
+ * Guarantees zero disruption to existing historical job cards.
+ */
+export async function modifyEquipmentWithAudit(
+  equipment: Equipment,
+  updates: Partial<Equipment>,
+  audit: {
+    modifiedBy: string;
+    changeType: EquipmentModificationLog['changeType'];
+    summary: string;
+    reason: string;
+    previousValues?: Record<string, any>;
+    newValues?: Record<string, any>;
+  }
+): Promise<void> {
+  const docRef = doc(db, COLLECTION_NAME, equipment.id);
+  const logEntry: EquipmentModificationLog = {
+    id: `mod-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    timestamp: new Date().toISOString(),
+    modifiedBy: audit.modifiedBy,
+    changeType: audit.changeType,
+    summary: audit.summary,
+    reason: audit.reason,
+    previousValues: audit.previousValues,
+    newValues: audit.newValues
+  };
+
+  const existingHistory = Array.isArray(equipment.modificationHistory)
+    ? equipment.modificationHistory
+    : [];
+
+  const newHistory = [logEntry, ...existingHistory];
+
+  try {
+    await updateDoc(docRef, {
+      ...updates,
+      modificationHistory: newHistory,
+      updatedAt: new Date().toISOString()
+    });
+
+    eventBus.publish('EQUIPMENT_MODIFIED', 'equipment', {
+      equipmentId: equipment.id,
+      equipmentCode: equipment.code,
+      changeType: audit.changeType,
+      modifiedBy: audit.modifiedBy,
+      reason: audit.reason
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `${COLLECTION_NAME}/${equipment.id}`);
     throw error;
   }
 }

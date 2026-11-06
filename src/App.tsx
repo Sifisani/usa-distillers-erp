@@ -52,7 +52,8 @@ import {
 import {
   subscribeEquipment,
   createEquipment,
-  updateEquipment
+  updateEquipment,
+  modifyEquipmentWithAudit
 } from './services/equipmentService';
 import {
   JobCard,
@@ -354,6 +355,7 @@ function MainApp() {
               onCreateEquipment={async (data) => {
                 await createEquipment(data);
               }}
+              onModifyEquipment={modifyEquipmentWithAudit}
               onNewJobCardForEquipment={handleNewJobCardForEquipment}
               searchQuery={searchQuery}
             />

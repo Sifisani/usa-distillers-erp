@@ -373,8 +373,22 @@ export interface Equipment {
   starterType?: StarterType;
   plantArea?: PlantArea;
 
+  // Asset Lineage & Engineering Revision Log
+  modificationHistory?: EquipmentModificationLog[];
+
   createdAt: string;
   updatedAt: string;
+}
+
+export interface EquipmentModificationLog {
+  id: string;
+  timestamp: string;
+  modifiedBy: string;
+  changeType: 'UPGRADE' | 'SWAP' | 'RELOCATION' | 'RENAME' | 'DECOMMISSION' | 'SPECS_UPDATE';
+  summary: string;
+  reason: string;
+  previousValues?: Record<string, any>;
+  newValues?: Record<string, any>;
 }
 
 export interface UserProfile {
