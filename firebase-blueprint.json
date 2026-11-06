@@ -152,6 +152,44 @@
         }
       },
       "required": ["uid", "email", "displayName", "role"]
+    },
+    "storesSlip": {
+      "title": "Stores Issue Requisition Slip",
+      "description": "Physical triplicate book voucher linking withdrawn spares to maintenance job cards",
+      "type": "object",
+      "properties": {
+        "slipNumber": {
+          "type": "string",
+          "description": "Pre-printed red sequential serial number e.g. 302857"
+        },
+        "bookType": {
+          "type": "string",
+          "enum": ["Mechanical", "Electrical", "Boilers", "Instrumentation", "General"],
+          "description": "Maintenance team book origin"
+        },
+        "date": {
+          "type": "string",
+          "description": "Date of issue (YYYY-MM-DD)"
+        },
+        "jobCardNumber": {
+          "type": "string",
+          "description": "Job card number e.g. JC-2026-0042"
+        },
+        "requestedByArtisan": {
+          "type": "string",
+          "description": "Artisan who requested and received the items"
+        },
+        "issuerSignature": {
+          "type": "string",
+          "description": "Storeman who authorized the withdrawal e.g. Elliot Mhlongo"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Issued", "Pending Verification", "Verified", "Cancelled"],
+          "description": "Voucher lifecycle status"
+        }
+      },
+      "required": ["slipNumber", "date", "jobCardNumber", "requestedByArtisan", "issuerSignature"]
     }
   },
   "firestore": {
@@ -166,6 +204,10 @@
     "/users/{userId}": {
       "schema": "userProfile",
       "description": "User profile with role and department assignments"
+    },
+    "/storesSlips/{slipId}": {
+      "schema": "storesSlip",
+      "description": "Physical book stores issue vouchers (triplicate NCR) linking spares to job cards"
     }
   }
 }

@@ -56,13 +56,19 @@ import {
   modifyEquipmentWithAudit
 } from './services/equipmentService';
 import {
+  subscribeStoresSlips,
+  createStoresSlip,
+  verifyStoresSlipHOD
+} from './services/storesSlipService';
+import {
   JobCard,
   Equipment,
   JobCardStatus,
   Priority,
   DEPARTMENTS_BY_CATEGORY,
   TechnicalTrade,
-  ShiftGroup
+  ShiftGroup,
+  StoresRequisitionSlip
 } from './types';
 import {
   getActiveStandbyRoster,
@@ -91,6 +97,7 @@ function MainApp() {
   // Data state
   const [jobCards, setJobCards] = useState<JobCard[]>([]);
   const [equipmentList, setEquipmentList] = useState<Equipment[]>([]);
+  const [storesSlips, setStoresSlips] = useState<StoresRequisitionSlip[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Modal states
@@ -124,9 +131,14 @@ function MainApp() {
       }
     );
 
+    const unsubSlips = subscribeStoresSlips((slips) => {
+      setStoresSlips(slips);
+    });
+
     return () => {
       unsubCards();
       unsubEquip();
+      unsubSlips();
     };
   }, []);
 
@@ -365,8 +377,17 @@ function MainApp() {
           {currentView === 'spares' && (
             <StoresSparesView
               jobCards={jobCards}
+              storesSlips={storesSlips}
               onSelectCard={(card) => setSelectedCardForDetail(card)}
               onIssueSparePart={issueSparePart}
+              onCreateStoresSlip={async (data) => {
+                await createStoresSlip(data, { currentUser: userProfile?.displayName });
+              }}
+              onVerifyStoresSlip={async (slip) => {
+                await verifyStoresSlipHOD(slip, {
+                  verifiedBy: userProfile?.displayName || 'Antonio Miranda (HOD Engineering)'
+                });
+              }}
               currentUser={userProfile?.displayName || 'Elliot Mhlongo'}
             />
           )}

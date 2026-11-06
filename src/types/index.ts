@@ -177,12 +177,57 @@ export interface SparePartItem {
   quantity: number;
   partNumber?: string;
   storeVoucherNumber?: string;
+  requisitionSlipNumber?: string;
+  costCenter?: string;
+  teamBook?: string;
   requestedBy: string;
   requestedAt: string;
   issuedBy?: string;
   issuedAt?: string;
   status: 'Requested' | 'Issued' | 'Out of Stock';
   unitCostEmalangeni?: number;
+}
+
+export interface StoresSlipItem {
+  id: string;
+  quantity: number;
+  description: string;
+  partNumber?: string;
+  unitCostEmalangeni?: number;
+}
+
+export type MaintenanceBookType =
+  | 'Mechanical'
+  | 'Electrical'
+  | 'Boilers'
+  | 'Instrumentation'
+  | 'General';
+
+export interface StoresRequisitionSlip {
+  id: string;
+  slipNumber: string; // e.g. "302857" (pre-printed red serial number)
+  bookType: MaintenanceBookType;
+  date: string;
+  jobCardId?: string;
+  jobCardNumber: string;
+  workOrderNumber?: string;
+  equipmentName: string;
+  department: string;
+  costCenter: string;
+  requestedByArtisan: string;
+  issuerSignature: string; // Storeman / Elliot Mhlongo
+  receivedBySignature: string; // Artisan
+  items: StoresSlipItem[];
+  status: 'Issued' | 'Pending Verification' | 'Verified' | 'Cancelled';
+  hodVerification?: {
+    verified: boolean;
+    verifiedBy?: string;
+    verifiedAt?: string;
+    notes?: string;
+  };
+  notes?: string;
+  createdAt: string;
+  updatedAt?: string;
 }
 
 export interface DailyPlantReport {

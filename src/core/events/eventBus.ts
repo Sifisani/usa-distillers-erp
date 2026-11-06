@@ -13,6 +13,8 @@ export type DomainEventType =
   | 'EQUIPMENT_STATUS_CHANGED'
   | 'EQUIPMENT_MODIFIED'
   | 'SPARES_REQUISITIONED'
+  | 'STORES_SLIP_LOGGED'
+  | 'STORES_SLIP_VERIFIED'
   | 'SAFETY_LOTO_PERMIT_SIGNED';
 
 export interface DomainEvent<T = any> {

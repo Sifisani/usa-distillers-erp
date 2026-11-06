@@ -845,7 +845,7 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                           <th className="p-2 text-center">Qty</th>
                           <th className="p-2">Part # / Bin</th>
                           <th className="p-2">Status</th>
-                          <th className="p-2">Store Voucher</th>
+                          <th className="p-2">Stores Requisition Slip #</th>
                           <th className="p-2 text-right">Action (Stores)</th>
                         </tr>
                       </thead>
@@ -862,7 +862,15 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                                 {part.status.toUpperCase()}
                               </span>
                             </td>
-                            <td className="p-2 font-mono text-slate-600">{part.storeVoucherNumber || 'Pending'}</td>
+                            <td className="p-2 font-mono">
+                              {part.requisitionSlipNumber || part.storeVoucherNumber ? (
+                                <span className="font-extrabold text-[#d32f2f] bg-red-50 border border-red-200 px-1.5 py-0.5 rounded text-[11px]">
+                                  #{part.requisitionSlipNumber || part.storeVoucherNumber}
+                                </span>
+                              ) : (
+                                <span className="text-slate-400 italic text-[11px]">Pending Issue</span>
+                              )}
+                            </td>
                             <td className="p-2 text-right">
                               {part.status !== 'Issued' ? (
                                 issuingPartId === part.id ? (
