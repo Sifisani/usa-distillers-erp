@@ -65,6 +65,14 @@ service cloud.firestore {
              data.issuerSignature is string && data.issuerSignature.size() <= 100;
     }
 
+    // Power Distribution SLD Node validation
+    function isValidPowerNode(data) {
+      return data.code is string && data.code.size() <= 50 &&
+             data.name is string && data.name.size() <= 150 &&
+             data.category in ['SOURCE', 'STEP_UP_TX', 'METERING_TX', 'BUSBAR', 'HV_FUSE', 'TRANSFORMER', 'BREAKER', 'CONTROL_CENTRE'] &&
+             data.operatingState in ['CLOSED', 'OPEN', 'TRIPPED', 'DECOMMISSIONED'];
+    }
+
     // Test connection doc
     match /test/{docId} {
       allow read: if true;
@@ -92,6 +100,14 @@ service cloud.firestore {
       allow create: if isValidId(slipId) && isValidStoresSlip(incoming());
       allow update: if isValidId(slipId) && isValidStoresSlip(incoming());
       allow delete: if isAdmin() || isSignedIn();
+    }
+
+    // Power Distribution SLD Nodes Collection: Editable breakers, transformers & sources
+    match /powerDistributionNodes/{nodeId} {
+      allow read: if true;
+      allow create: if isValidId(nodeId) && isValidPowerNode(incoming());
+      allow update: if isValidId(nodeId) && isValidPowerNode(incoming());
+      allow delete: if isAdmin();
     }
 
     // User Profiles Collection

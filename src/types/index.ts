@@ -418,11 +418,110 @@ export interface Equipment {
   starterType?: StarterType;
   plantArea?: PlantArea;
 
+  // Power Distribution Single-Line Diagram (SLD) mapping
+  feederPanel?: FeederPanelId | string;
+  transformerSource?: TransformerSource;
+  feederBreaker?: string;
+
   // Asset Lineage & Engineering Revision Log
   modificationHistory?: EquipmentModificationLog[];
 
   createdAt: string;
   updatedAt: string;
+}
+
+export type TransformerSource = 'Tx1' | 'Tx2' | 'Tx3';
+
+export type FeederPanelId =
+  | 'MCC 1'
+  | 'Boiler 2'
+  | 'MCC 4'
+  | 'MCC 2'
+  | 'Old Water Treatment Plant'
+  | 'Batch Plant'
+  | 'Dam 1 (slops)'
+  | 'Boiler 1'
+  | 'MCC 3'
+  | 'Sub DB1 Compressors'
+  | 'Boiler 3'
+  | 'New Water Treatment Plant';
+
+export type PowerNodeCategory =
+  | 'SOURCE'
+  | 'STEP_UP_TX'
+  | 'METERING_TX'
+  | 'BUSBAR'
+  | 'HV_FUSE'
+  | 'TRANSFORMER'
+  | 'BREAKER'
+  | 'CONTROL_CENTRE';
+
+export type BreakerType =
+  | 'VCB'
+  | 'ACB'
+  | 'MCCB'
+  | 'MCB'
+  | 'Fused Switch-Disconnector'
+  | 'Unrecorded';
+
+export type BreakerOperatingState = 'CLOSED' | 'OPEN' | 'TRIPPED' | 'DECOMMISSIONED';
+
+export interface PowerDistributionNode {
+  id: string;
+  code: string;
+  name: string;
+  category: PowerNodeCategory;
+  groupSection: 'OLD_TURBINE' | 'EEC_SUPPLY' | 'NEW_TURBINE' | 'HV_BUS' | 'TX1' | 'TX2' | 'TX3';
+  transformerSource?: TransformerSource | 'HV_11KV';
+  parentNodeId?: string;
+  feederPanelId?: FeederPanelId;
+
+  // Circuit breaker & switchgear attributes (editable)
+  brand: string;
+  model: string;
+  breakerType: BreakerType;
+  frameSize?: string;
+  ratedAmps: number | null;
+  tripSettingAmps?: number | null;
+  measuredLoadAmps?: number | null;
+  measuredLoadUpdatedAt?: string;
+  operatingState: BreakerOperatingState;
+
+  // Electrical ratings (sources, transformers, busbars)
+  voltage: string;
+  kva?: number;
+  powerMw?: number;
+  primaryAmps?: number;
+  secondaryAmps?: number;
+  frequencyHz?: number;
+
+  // Safety & Interlock Watchdog
+  interlockStatus: 'INTERLOCKED' | 'NONE_HAZARD' | 'NOT_APPLICABLE';
+  interlockPartnerId?: string;
+  interlockHazardNote?: string;
+  lotoIsolationProcedure: string;
+
+  location: string;
+  description: string;
+  notes?: string;
+  modificationHistory?: EquipmentModificationLog[];
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
+export interface ElectricalFeederNodeMeta {
+  id: FeederPanelId;
+  name: string;
+  code: string;
+  breakerId: string;
+  breakerCode: string;
+  breakerSpecs: string;
+  transformerSource: TransformerSource;
+  voltage: string;
+  upstreamBreaker: string;
+  location: string;
+  description: string;
+  lotoIsolationProcedure: string;
 }
 
 export interface EquipmentModificationLog {

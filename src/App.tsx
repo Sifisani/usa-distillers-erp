@@ -61,6 +61,10 @@ import {
   verifyStoresSlipHOD
 } from './services/storesSlipService';
 import {
+  subscribePowerNodes,
+  updatePowerNodeWithAudit
+} from './services/powerDistributionService';
+import {
   JobCard,
   Equipment,
   JobCardStatus,
@@ -68,7 +72,8 @@ import {
   DEPARTMENTS_BY_CATEGORY,
   TechnicalTrade,
   ShiftGroup,
-  StoresRequisitionSlip
+  StoresRequisitionSlip,
+  PowerDistributionNode
 } from './types';
 import {
   getActiveStandbyRoster,
@@ -98,6 +103,7 @@ function MainApp() {
   const [jobCards, setJobCards] = useState<JobCard[]>([]);
   const [equipmentList, setEquipmentList] = useState<Equipment[]>([]);
   const [storesSlips, setStoresSlips] = useState<StoresRequisitionSlip[]>([]);
+  const [powerNodes, setPowerNodes] = useState<PowerDistributionNode[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Modal states
@@ -135,10 +141,15 @@ function MainApp() {
       setStoresSlips(slips);
     });
 
+    const unsubPower = subscribePowerNodes((nodes) => {
+      setPowerNodes(nodes);
+    });
+
     return () => {
       unsubCards();
       unsubEquip();
       unsubSlips();
+      unsubPower();
     };
   }, []);
 
@@ -364,6 +375,11 @@ function MainApp() {
             <EquipmentView
               equipmentList={equipmentList}
               jobCards={jobCards}
+              powerNodes={powerNodes}
+              currentUserName={userProfile?.displayName || 'Engineering Supervisor'}
+              onUpdatePowerNode={async (node, updates, audit) => {
+                await updatePowerNodeWithAudit(node, updates, audit);
+              }}
               onCreateEquipment={async (data) => {
                 await createEquipment(data);
               }}

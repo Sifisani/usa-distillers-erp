@@ -44,13 +44,34 @@ import {
   JobCard,
   PlantArea,
   StarterType,
-  EquipmentModificationLog
+  EquipmentModificationLog,
+  FeederPanelId,
+  PowerDistributionNode
 } from '../../types';
 import { syncOfficialPlantEquipmentRegistry } from '../../services/equipmentService';
+import { PowerDistributionSLDView } from './PowerDistributionSLDView';
+import {
+  resolveEquipmentFeederInfo,
+  FEEDER_PANELS,
+  DEFAULT_POWER_NODES
+} from '../../core/master-data/powerDistributionData';
 
 interface EquipmentViewProps {
   equipmentList: Equipment[];
   jobCards: JobCard[];
+  powerNodes?: PowerDistributionNode[];
+  currentUserName?: string;
+  onUpdatePowerNode?: (
+    node: PowerDistributionNode,
+    updates: Partial<PowerDistributionNode>,
+    audit: {
+      modifiedBy: string;
+      summary: string;
+      reason: string;
+      previousValues?: Record<string, any>;
+      newValues?: Record<string, any>;
+    }
+  ) => Promise<void>;
   onCreateEquipment: (data: any) => Promise<void>;
   onModifyEquipment?: (
     equipment: Equipment,
@@ -168,6 +189,9 @@ export const PLANT_SECTIONS_CONFIG: PlantSectionMeta[] = [
 export const EquipmentView: React.FC<EquipmentViewProps> = ({
   equipmentList,
   jobCards,
+  powerNodes = DEFAULT_POWER_NODES,
+  currentUserName = 'Engineering Supervisor',
+  onUpdatePowerNode,
   onCreateEquipment,
   onModifyEquipment,
   onNewJobCardForEquipment,
@@ -177,7 +201,8 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
   const [selectedSubArea, setSelectedSubArea] = useState<string>('ALL');
   const [selectedStatus, setSelectedStatus] = useState<string>('ALL');
   const [selectedStarter, setSelectedStarter] = useState<string>('ALL');
-  const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
+  const [viewMode, setViewMode] = useState<'grid' | 'table' | 'sld'>('grid');
+  const [targetFeederPanel, setTargetFeederPanel] = useState<FeederPanelId | null>(null);
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [selectedEquipmentForDetail, setSelectedEquipmentForDetail] = useState<Equipment | null>(null);
   const [detailTab, setDetailTab] = useState<'work_orders' | 'lineage'>('work_orders');
@@ -214,6 +239,7 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
   const [editOverloadAmps, setEditOverloadAmps] = useState<string>('');
   const [editStatus, setEditStatus] = useState<EquipmentStatus>('Operational');
   const [editCriticality, setEditCriticality] = useState<Criticality>('High');
+  const [editFeederPanel, setEditFeederPanel] = useState<FeederPanelId>('MCC 1');
   const [editNotes, setEditNotes] = useState<string>('');
   const [editReason, setEditReason] = useState<string>('');
   const [editModifiedBy, setEditModifiedBy] = useState<string>('Antonio Miranda (HOD Engineering)');
@@ -224,6 +250,7 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
     eq: Equipment,
     defaultType: EquipmentModificationLog['changeType'] = 'UPGRADE'
   ) => {
+    const resolvedFeeder = resolveEquipmentFeederInfo(eq);
     setEquipmentToEdit(eq);
     setEditChangeType(defaultType);
     setEditName(eq.name || '');
@@ -238,6 +265,7 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
     setEditOverloadAmps(eq.overloadAmps !== undefined ? String(eq.overloadAmps) : '');
     setEditStatus(eq.status || 'Operational');
     setEditCriticality(eq.criticality || 'High');
+    setEditFeederPanel(resolvedFeeder.feederPanel);
     setEditNotes(eq.notes || '');
     setEditReason('');
     setEditModifiedBy('Antonio Miranda (HOD Engineering)');
@@ -258,6 +286,7 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
     setEditFeedback(null);
 
     try {
+      const panelMeta = FEEDER_PANELS.find(p => p.id === editFeederPanel);
       const updates: Partial<Equipment> = {
         name: editName.trim(),
         code: editCode.trim(),
@@ -271,6 +300,9 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
         overloadAmps: editOverloadAmps ? parseFloat(editOverloadAmps) : undefined,
         status: editStatus,
         criticality: editCriticality,
+        feederPanel: editFeederPanel,
+        transformerSource: panelMeta?.transformerSource,
+        feederBreaker: panelMeta?.breakerCode,
         notes: editNotes.trim()
       };
 
@@ -551,8 +583,9 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
         </div>
       )}
 
-      {/* MASTER SECTION SELECTOR TABS (The 6 Plant Departments) */}
-      <div className="bg-white p-2 rounded-lg border border-slate-200 shadow-2xs">
+      {/* MASTER SECTION SELECTOR TABS (Hidden in 1-page Power SLD view so the diagram fits one screen) */}
+      {viewMode !== 'sld' && (
+        <div className="bg-white p-2 rounded-lg border border-slate-200 shadow-2xs">
         <div className="flex items-center justify-between border-b border-slate-100 pb-2 px-2">
           <div className="flex items-center gap-2">
             <Cpu className="w-4 h-4 text-[#714B67]" />
@@ -642,9 +675,10 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
           })}
         </div>
       </div>
+      )}
 
-      {/* DEPARTMENT CONTEXT CARD (When specific section is active) */}
-      {currentSectionMeta && (
+      {/* DEPARTMENT CONTEXT CARD (When specific section is active and not in SLD view) */}
+      {viewMode !== 'sld' && currentSectionMeta && (
         <div className="bg-white border border-slate-200 rounded-lg p-3.5 shadow-2xs space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
             <div className="flex items-center gap-2">
@@ -772,20 +806,41 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
           </select>
 
           {/* View Mode Toggle */}
-          <div className="flex border border-slate-300 rounded bg-slate-50 overflow-hidden">
+          <div className="flex border border-slate-300 rounded bg-slate-50 overflow-hidden shadow-2xs">
             <button
               onClick={() => setViewMode('grid')}
-              className={`p-1.5 cursor-pointer ${viewMode === 'grid' ? 'bg-[#714B67] text-white shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+              className={`px-2.5 py-1.5 cursor-pointer flex items-center gap-1.5 text-xs font-medium transition ${
+                viewMode === 'grid' ? 'bg-[#714B67] text-white shadow-xs font-semibold' : 'text-slate-600 hover:text-slate-900'
+              }`}
               title="Grid Card View"
             >
               <LayoutGrid className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Grid</span>
             </button>
             <button
               onClick={() => setViewMode('table')}
-              className={`p-1.5 cursor-pointer ${viewMode === 'table' ? 'bg-[#714B67] text-white shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+              className={`px-2.5 py-1.5 cursor-pointer flex items-center gap-1.5 text-xs font-medium border-l border-slate-200 transition ${
+                viewMode === 'table' ? 'bg-[#714B67] text-white shadow-xs font-semibold' : 'text-slate-600 hover:text-slate-900'
+              }`}
               title="Compact Table View"
             >
               <List className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Table</span>
+            </button>
+            <button
+              onClick={() => {
+                setTargetFeederPanel(null);
+                setViewMode('sld');
+              }}
+              className={`px-3 py-1.5 cursor-pointer flex items-center gap-1.5 text-xs font-semibold border-l border-slate-200 transition ${
+                viewMode === 'sld'
+                  ? 'bg-amber-600 text-white shadow-xs'
+                  : 'bg-amber-50/60 text-amber-800 hover:bg-amber-100/80 hover:text-amber-900'
+              }`}
+              title="Plant Power Distribution Single-Line Diagram"
+            >
+              <Zap className={`w-3.5 h-3.5 ${viewMode === 'sld' ? 'text-white' : 'text-amber-600 fill-amber-500'}`} />
+              <span>Power SLD</span>
             </button>
           </div>
         </div>
@@ -847,6 +902,25 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
                         {eq.department}
                       </span>
                     </div>
+
+                    {/* Electrical Power Distribution Lineage Badge */}
+                    {(() => {
+                      const feeder = resolveEquipmentFeederInfo(eq);
+                      return (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setTargetFeederPanel(feeder.feederPanel);
+                            setViewMode('sld');
+                          }}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 hover:border-amber-300 transition cursor-pointer mb-2.5"
+                          title={`Fed via ${feeder.transformerSource} ➔ ${feeder.feederBreaker}. Click to locate in Single-Line Diagram.`}
+                        >
+                          <Zap className="w-3 h-3 text-amber-600 fill-amber-500" />
+                          <span>{feeder.transformerSource} • {feeder.feederBreaker} ({feeder.feederPanel})</span>
+                        </button>
+                      );
+                    })()}
 
                     {/* Electrical & Mechanical Checklist Specs */}
                     {(eq.powerKw || eq.starterType || eq.overloadAmps || eq.speedRpm) && (
@@ -932,6 +1006,7 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
                 <th className="py-2.5 px-3">Machine Description</th>
                 <th className="py-2.5 px-3">Department Section</th>
                 <th className="py-2.5 px-3">Plant Bay</th>
+                <th className="py-2.5 px-3">Feeder Breaker</th>
                 <th className="py-2.5 px-3 text-right">Power (kW)</th>
                 <th className="py-2.5 px-3">Starter</th>
                 <th className="py-2.5 px-3">Rated / O/L</th>
@@ -976,6 +1051,25 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
 
                     <td className="py-2.5 px-3 text-slate-600 font-mono text-[11px]">
                       {eq.plantArea || '-'}
+                    </td>
+
+                    <td className="py-2.5 px-3" onClick={(e) => e.stopPropagation()}>
+                      {(() => {
+                        const feeder = resolveEquipmentFeederInfo(eq);
+                        return (
+                          <button
+                            onClick={() => {
+                              setTargetFeederPanel(feeder.feederPanel);
+                              setViewMode('sld');
+                            }}
+                            className="inline-flex items-center gap-1 font-mono text-[10px] font-bold px-2 py-0.5 rounded bg-amber-50 text-amber-850 border border-amber-200 hover:bg-amber-100 hover:border-amber-300 transition cursor-pointer"
+                            title={`Fed via ${feeder.transformerSource} ➔ ${feeder.feederBreaker}. Click to locate in Single-Line Diagram.`}
+                          >
+                            <Zap className="w-2.5 h-2.5 text-amber-600 fill-amber-500" />
+                            <span>{feeder.feederBreaker}</span>
+                          </button>
+                        );
+                      })()}
                     </td>
 
                     <td className="py-2.5 px-3 font-mono text-right font-bold text-slate-900">
@@ -1026,6 +1120,26 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
             </tbody>
           </table>
         </div>
+      )}
+
+      {/* VIEW 3: POWER DISTRIBUTION SINGLE-LINE DIAGRAM (SLD) */}
+      {viewMode === 'sld' && (
+        <PowerDistributionSLDView
+          powerNodes={powerNodes.length > 0 ? powerNodes : DEFAULT_POWER_NODES}
+          equipmentList={equipmentList}
+          jobCards={jobCards}
+          currentUserName={currentUserName}
+          initialSelectedPanel={targetFeederPanel}
+          onUpdatePowerNode={async (node, updates, audit) => {
+            if (onUpdatePowerNode) {
+              await onUpdatePowerNode(node, updates, audit);
+            }
+          }}
+          onModifyEquipment={onModifyEquipment}
+          onCreateEquipment={onCreateEquipment}
+          onSelectEquipment={(eq) => setSelectedEquipmentForDetail(eq)}
+          onNewJobCardForEquipment={(eq) => onNewJobCardForEquipment(eq)}
+        />
       )}
 
       {/* ASSET DETAIL POPUP / SLIDE-OVER MODAL */}
@@ -1115,6 +1229,55 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
                 </span>
               </div>
             </div>
+
+            {/* Electrical Power Distribution Lineage & SLD Locator */}
+            {(() => {
+              const feeder = resolveEquipmentFeederInfo(selectedEquipmentForDetail);
+              const panelMeta = FEEDER_PANELS.find(p => p.id === feeder.feederPanel);
+              return (
+                <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-300/80 text-xs text-amber-950 flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold flex items-center gap-1.5 text-amber-900 font-mono text-[11px] uppercase tracking-wider">
+                      <Zap className="w-3.5 h-3.5 text-amber-600 fill-amber-500" />
+                      Power Distribution Lineage (SLD)
+                    </span>
+                    <span className="font-mono text-[10px] bg-amber-100 text-amber-900 px-2 py-0.5 rounded font-semibold border border-amber-200">
+                      {panelMeta?.voltage || '415V / 420V'}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-[11px] font-mono">
+                    <div className="bg-white/90 p-1.5 rounded border border-amber-200">
+                      <span className="text-[9px] text-slate-500 uppercase block">Source Tx</span>
+                      <span className="font-bold text-slate-900">{feeder.transformerSource}</span>
+                    </div>
+                    <div className="bg-white/90 p-1.5 rounded border border-amber-200">
+                      <span className="text-[9px] text-slate-500 uppercase block">Feeder Breaker</span>
+                      <span className="font-bold text-amber-700">{feeder.feederBreaker}</span>
+                    </div>
+                    <div className="bg-white/90 p-1.5 rounded border border-amber-200">
+                      <span className="text-[9px] text-slate-500 uppercase block">Distribution Panel</span>
+                      <span className="font-bold text-slate-900 truncate block">{feeder.feederPanel}</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-[10px] text-slate-600 truncate max-w-[280px]">
+                      {panelMeta?.location}
+                    </span>
+                    <button
+                      onClick={() => {
+                        setTargetFeederPanel(feeder.feederPanel);
+                        setViewMode('sld');
+                        setSelectedEquipmentForDetail(null);
+                      }}
+                      className="px-2.5 py-1 text-[11px] font-semibold bg-amber-600 hover:bg-amber-700 text-white rounded transition flex items-center gap-1 cursor-pointer shadow-xs"
+                    >
+                      <Zap className="w-3 h-3" />
+                      Locate in Single-Line Diagram
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Notes */}
             {selectedEquipmentForDetail.notes && (
@@ -1543,6 +1706,24 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
                     <option value="Decommissioned">Decommissioned</option>
                   </select>
                 </div>
+              </div>
+
+              {/* Electrical Feeder Panel Assignment */}
+              <div className="p-2.5 rounded bg-slate-100 border border-slate-200">
+                <label className="block text-slate-800 font-bold mb-1">
+                  Power Distribution Feeder Breaker (SLD Branch)
+                </label>
+                <select
+                  value={editFeederPanel}
+                  onChange={(e) => setEditFeederPanel(e.target.value as FeederPanelId)}
+                  className="w-full px-2.5 py-1.5 border border-slate-300 rounded bg-white text-slate-900 font-semibold"
+                >
+                  {FEEDER_PANELS.map(p => (
+                    <option key={p.id} value={p.id}>
+                      {p.breakerCode} — {p.name} ({p.transformerSource})
+                    </option>
+                  ))}
+                </select>
               </div>
 
               {/* Engineering Change Reason (Compulsory Audit Field) */}

@@ -38,6 +38,7 @@ eventBus.subscribe<JobCardStatusChangedPayload>('JOB_CARD_STATUS_CHANGED', async
 });
 
 import { PLANT_EQUIPMENT_REGISTRY } from '../core/master-data/plantEquipment';
+import { resolveEquipmentFeederInfo } from '../core/master-data/powerDistributionData';
 
 export const INITIAL_EQUIPMENT_DATA: Omit<Equipment, 'id'>[] = PLANT_EQUIPMENT_REGISTRY;
 
@@ -84,6 +85,9 @@ export function subscribeEquipment(
           overloadAmps: typeof data.overloadAmps === 'number' ? data.overloadAmps : undefined,
           starterType: data.starterType || undefined,
           plantArea: data.plantArea || undefined,
+          feederPanel: data.feederPanel || resolveEquipmentFeederInfo(data).feederPanel,
+          transformerSource: data.transformerSource || resolveEquipmentFeederInfo(data).transformerSource,
+          feederBreaker: data.feederBreaker || resolveEquipmentFeederInfo(data).feederBreaker,
           modificationHistory: Array.isArray(data.modificationHistory) ? data.modificationHistory : [],
           createdAt: data.createdAt || new Date().toISOString(),
           updatedAt: data.updatedAt || new Date().toISOString()

@@ -190,6 +190,53 @@
         }
       },
       "required": ["slipNumber", "date", "jobCardNumber", "requestedByArtisan", "issuerSignature"]
+    },
+    "powerDistributionNode": {
+      "title": "Power Distribution Node",
+      "description": "Single-Line Diagram electrical component, transformer, busbar, or circuit breaker (C1-C20)",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "Component or circuit designation e.g. C4, C8, TX1"
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name of switchgear, breaker, transformer, or MCC panel"
+        },
+        "category": {
+          "type": "string",
+          "enum": ["SOURCE", "STEP_UP_TX", "METERING_TX", "BUSBAR", "HV_FUSE", "TRANSFORMER", "BREAKER", "CONTROL_CENTRE"],
+          "description": "Component classification in the SLD"
+        },
+        "brand": {
+          "type": "string",
+          "description": "Switchgear manufacturer brand e.g. Chint, ABB, Eaton Cutler-Hammer"
+        },
+        "model": {
+          "type": "string",
+          "description": "Breaker or unit model e.g. NA1-3200, SACE E1B 12"
+        },
+        "breakerType": {
+          "type": "string",
+          "enum": ["VCB", "ACB", "MCCB", "MCB", "Fused Switch-Disconnector", "Unrecorded"],
+          "description": "Type of circuit breaker"
+        },
+        "ratedAmps": {
+          "type": "number",
+          "description": "Rated current size in Amperes"
+        },
+        "measuredLoadAmps": {
+          "type": "number",
+          "description": "Measured field load current in Amperes"
+        },
+        "operatingState": {
+          "type": "string",
+          "enum": ["CLOSED", "OPEN", "TRIPPED", "DECOMMISSIONED"],
+          "description": "Current switching state"
+        }
+      },
+      "required": ["code", "name", "category", "operatingState"]
     }
   },
   "firestore": {
@@ -208,6 +255,10 @@
     "/storesSlips/{slipId}": {
       "schema": "storesSlip",
       "description": "Physical book stores issue vouchers (triplicate NCR) linking spares to job cards"
+    },
+    "/powerDistributionNodes/{nodeId}": {
+      "schema": "powerDistributionNode",
+      "description": "Editable SLD circuit breakers (C1-C20), transformers, HV fuses, busbars, and generators"
     }
   }
 }
