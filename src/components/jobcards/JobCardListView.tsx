@@ -10,9 +10,11 @@ import {
   Layers,
   CheckCircle2,
   Trash2,
-  Filter
+  Filter,
+  GitBranch
 } from 'lucide-react';
 import { JobCard, JobCardStatus, Priority } from '../../types';
+import { getWorkflowStageMeta, resolveWorkflowStage } from '../../core/jobcards/workflow';
 
 interface JobCardListViewProps {
   jobCards: JobCard[];
@@ -42,6 +44,16 @@ export const JobCardListView: React.FC<JobCardListViewProps> = ({
   const [sortField, setSortField] = useState<SortField>('createdAt');
   const [sortAsc, setSortAsc] = useState<boolean>(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  const childCountByParentId = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const c of jobCards) {
+      if (c.parentJobCardId) {
+        counts[c.parentJobCardId] = (counts[c.parentJobCardId] || 0) + 1;
+      }
+    }
+    return counts;
+  }, [jobCards]);
 
   // Filtering logic
   const filteredCards = useMemo(() => {
@@ -375,8 +387,20 @@ export const JobCardListView: React.FC<JobCardListViewProps> = ({
                         )}
                       </div>
                       {card.tradeRequired && (
-                        <div className="text-[10px] text-indigo-700 font-sans font-medium mt-0.5">
-                          {card.tradeRequired} {card.shiftAssigned ? `• ${card.shiftAssigned}` : ''}
+                        <div className="text-[10px] text-indigo-700 font-sans font-medium mt-0.5 flex flex-wrap items-center gap-1.5">
+                          <span>{card.tradeRequired} {card.shiftAssigned ? `• ${card.shiftAssigned}` : ''}</span>
+                          {card.parentJobCardNumber && (
+                            <span className="px-1 py-0.2 rounded bg-teal-50 text-teal-800 border border-teal-200 font-mono inline-flex items-center gap-0.5">
+                              <GitBranch className="w-2.5 h-2.5" />
+                              {card.parentJobCardNumber}
+                            </span>
+                          )}
+                          {(childCountByParentId[card.id] || 0) > 0 && (
+                            <span className="px-1 py-0.2 rounded bg-purple-50 text-[#714B67] border border-purple-200 font-semibold inline-flex items-center gap-0.5">
+                              <GitBranch className="w-2.5 h-2.5" />
+                              +{childCountByParentId[card.id]} linked
+                            </span>
+                          )}
                         </div>
                       )}
                     </td>
@@ -416,17 +440,21 @@ export const JobCardListView: React.FC<JobCardListViewProps> = ({
                     </td>
 
                     <td className="py-2.5 px-3">
-                      <div className="space-y-1">
-                        <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium border inline-flex items-center gap-1 ${getStatusBadge(card.status)}`}>
-                          <span className="w-1.5 h-1.5 rounded-full bg-current"></span>
-                          {card.status}
-                        </span>
-                        {card.requisitionStage && card.requisitionStage !== card.status && (
-                          <div className={`text-[10px] px-1.5 py-0.2 rounded border font-medium ${getStageBadge(card.requisitionStage)}`}>
-                            {card.requisitionStage}
+                      {(() => {
+                        const stage = resolveWorkflowStage(card);
+                        const stageMeta = getWorkflowStageMeta(stage);
+                        return (
+                          <div className="space-y-1">
+                            <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium border inline-flex items-center gap-1 ${getStatusBadge(card.status)}`}>
+                              <span className="w-1.5 h-1.5 rounded-full bg-current"></span>
+                              {card.status}
+                            </span>
+                            <div className={`text-[10px] px-1.5 py-0.2 rounded border font-semibold inline-block ${stageMeta.badgeClass}`}>
+                              {stageMeta.shortLabel}
+                            </div>
                           </div>
-                        )}
-                      </div>
+                        );
+                      })()}
                     </td>
 
                     <td className="py-2.5 px-3 text-slate-700">

@@ -42,6 +42,7 @@ interface StoresSparesViewProps {
   ) => Promise<void>;
   onVerifyStoresSlip?: (slip: StoresRequisitionSlip) => Promise<void>;
   currentUser?: string;
+  canIssueSpares?: boolean;
 }
 
 interface FlattenedSparePart extends SparePartItem {
@@ -55,7 +56,8 @@ export const StoresSparesView: React.FC<StoresSparesViewProps> = ({
   onIssueSparePart,
   onCreateStoresSlip,
   onVerifyStoresSlip,
-  currentUser = 'Elliot Mhlongo'
+  currentUser = 'Elliot Mhlongo',
+  canIssueSpares = true
 }) => {
   // Main View Mode: Physical Books & Slips vs Line-Item Queue
   const [activeTab, setActiveTab] = useState<'slips' | 'items'>('slips');
@@ -70,6 +72,7 @@ export const StoresSparesView: React.FC<StoresSparesViewProps> = ({
   const [issuingPart, setIssuingPart] = useState<{ card: JobCard; part: SparePartItem } | null>(null);
   const [voucherNumber, setVoucherNumber] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [issueError, setIssueError] = useState<string | null>(null);
 
   // Modals
   const [isLogSlipModalOpen, setIsLogSlipModalOpen] = useState(false);
@@ -145,6 +148,7 @@ export const StoresSparesView: React.FC<StoresSparesViewProps> = ({
   const pendingSlipsCount = storesSlips.filter((s) => !s.hodVerification?.verified).length;
 
   const handleOpenIssueModal = (card: JobCard, part: SparePartItem) => {
+    setIssueError(null);
     setIssuingPart({ card, part });
     // Default voucher to next slip number format
     const nextNum = storesSlips.length > 0 ? String(302859 + storesSlips.length) : '302859';
@@ -154,6 +158,7 @@ export const StoresSparesView: React.FC<StoresSparesViewProps> = ({
   const handleConfirmIssue = async () => {
     if (!issuingPart || !voucherNumber.trim()) return;
     setIsSubmitting(true);
+    setIssueError(null);
     try {
       await onIssueSparePart(issuingPart.card, issuingPart.part.id, {
         issuedBy: currentUser,
@@ -161,8 +166,9 @@ export const StoresSparesView: React.FC<StoresSparesViewProps> = ({
       });
       setIssuingPart(null);
       setVoucherNumber('');
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error issuing spare part:', err);
+      setIssueError(err?.message || 'Permission denied or failed to issue spare part.');
     } finally {
       setIsSubmitting(false);
     }
@@ -621,7 +627,7 @@ export const StoresSparesView: React.FC<StoresSparesViewProps> = ({
                               <span className="text-[11px] text-slate-500">
                                 Issued by {part.issuedBy || 'Stores'}
                               </span>
-                            ) : (
+                            ) : canIssueSpares ? (
                               <button
                                 onClick={() => handleOpenIssueModal(card, part)}
                                 className="px-2.5 py-1 rounded bg-amber-600 hover:bg-amber-700 text-white font-bold text-[11px] shadow-xs cursor-pointer flex items-center gap-1 ml-auto"
@@ -629,6 +635,10 @@ export const StoresSparesView: React.FC<StoresSparesViewProps> = ({
                                 <Package className="w-3 h-3" />
                                 <span>Issue Part</span>
                               </button>
+                            ) : (
+                              <span className="text-[11px] text-slate-400 italic">
+                                Stores Officer Only
+                              </span>
                             )}
                           </td>
                         </tr>
@@ -725,6 +735,13 @@ export const StoresSparesView: React.FC<StoresSparesViewProps> = ({
                   className="w-full px-3 py-1.5 border border-slate-200 rounded bg-slate-100 text-slate-700 font-medium cursor-not-allowed"
                 />
               </div>
+
+              {issueError && (
+                <div className="p-2 rounded bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                  <span>{issueError}</span>
+                </div>
+              )}
             </div>
 
             <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">

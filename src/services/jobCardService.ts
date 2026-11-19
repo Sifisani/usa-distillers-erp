@@ -10,17 +10,59 @@ import { db, handleFirestoreError, OperationType, auth } from '../firebase';
 import {
   JobCard,
   JobCardStatus,
+  JobCardWorkflowStage,
   Priority,
   LaborLog,
   ActivityComment,
   ShiftHandoverLog,
   SafetyPermits,
   TechnicalTrade,
-  ShiftGroup
+  ShiftGroup,
+  JobCardAttachment
 } from '../types';
+import { emitAppNotification } from './notificationService';
 import { eventBus } from '../core/events/eventBus';
+import {
+  JobCardActorContext,
+  canAssignOrAcceptJobCard,
+  canDeleteJobCard,
+  canEditJobCard,
+  canHODSignOffJobCard,
+  canIssueSpares,
+  canLogLaborOrHandover,
+  canRecordArtisanHandback,
+  canRequestSpares,
+  canSpawnLinkedJobCard,
+  canTransitionJobCardStatus,
+  canTransitionWorkflowStage,
+  getJobCardPermissionReason
+} from '../core/jobcards/permissions';
+import {
+  appendStatusHistory,
+  createStatusHistoryEntry,
+  getWorkflowStageMeta,
+  mapLegacyStatusToWorkflowStage,
+  mapWorkflowStageToLegacy,
+  resolveWorkflowStage
+} from '../core/jobcards/workflow';
 
 const COLLECTION_NAME = 'jobCards';
+
+function stripUndefinedDeep<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => stripUndefinedDeep(item)) as unknown as T;
+  }
+  if (value && typeof value === 'object') {
+    const clean: Record<string, any> = {};
+    for (const [k, v] of Object.entries(value as Record<string, any>)) {
+      if (v !== undefined) {
+        clean[k] = stripUndefinedDeep(v);
+      }
+    }
+    return clean as T;
+  }
+  return value;
+}
 
 export const INITIAL_JOB_CARDS: Omit<JobCard, 'id'>[] = [
   {
@@ -248,16 +290,22 @@ export function subscribeJobCards(
   onError?: (error: Error) => void
 ) {
   const q = collection(db, COLLECTION_NAME);
+  let autoSeedAttempted = false;
+
   return onSnapshot(
     q,
     async (snapshot) => {
       if (snapshot.empty) {
-        // If the collection is completely empty, seed initial distillery template cards
-        try {
-          await seedInitialJobCards();
-        } catch (e) {
-          console.warn('Could not auto-seed job cards:', e);
+        if (!autoSeedAttempted) {
+          autoSeedAttempted = true;
+          try {
+            await seedInitialJobCards();
+            return;
+          } catch (e) {
+            console.warn('Could not auto-seed job cards:', e);
+          }
         }
+        onUpdate([]);
         return;
       }
       const items: JobCard[] = snapshot.docs.map((d) => {
@@ -291,6 +339,38 @@ export function subscribeJobCards(
           safetyPermits: data.safetyPermits || undefined,
           shiftHandovers: Array.isArray(data.shiftHandovers) ? data.shiftHandovers : [],
           equipmentSpecs: data.equipmentSpecs || undefined,
+          // Official Works Requisition Slip & Supervisor/HOD Workflow fields
+          workOrderNumber: data.workOrderNumber || undefined,
+          requisitionType: data.requisitionType || undefined,
+          costCenter: data.costCenter || undefined,
+          dangerTagRequired: typeof data.dangerTagRequired === 'boolean' ? data.dangerTagRequired : undefined,
+          dangerTagNumber: data.dangerTagNumber || undefined,
+          recipientDepartment: data.recipientDepartment || undefined,
+          originatingDepartment: data.originatingDepartment || undefined,
+          originatedBy: data.originatedBy || undefined,
+          originatedTime: data.originatedTime || undefined,
+          originatedSignature: data.originatedSignature || undefined,
+          physicalSlipLogged: typeof data.physicalSlipLogged === 'boolean' ? data.physicalSlipLogged : undefined,
+          workflowStage: data.workflowStage || undefined,
+          statusHistory: Array.isArray(data.statusHistory) ? data.statusHistory : [],
+          holdReason: data.holdReason || undefined,
+          requisitionStage: data.requisitionStage || undefined,
+          assignedSupervisor: data.assignedSupervisor || undefined,
+          acceptedAt: data.acceptedAt || undefined,
+          acceptedBy: data.acceptedBy || undefined,
+          completedByArtisan: data.completedByArtisan || undefined,
+          artisanSignature: data.artisanSignature || undefined,
+          artisanHandbackNotes: data.artisanHandbackNotes || undefined,
+          completionDate: data.completionDate || undefined,
+          completionTime: data.completionTime || undefined,
+          completionHours: typeof data.completionHours === 'number' ? data.completionHours : undefined,
+          sparesRequested: Array.isArray(data.sparesRequested) ? data.sparesRequested : [],
+          hodSignedBy: data.hodSignedBy || undefined,
+          hodDigitalSignOff: data.hodDigitalSignOff || undefined,
+          qcSignedBy: data.qcSignedBy || undefined,
+          parentJobCardId: data.parentJobCardId || undefined,
+          parentJobCardNumber: data.parentJobCardNumber || undefined,
+          attachments: Array.isArray(data.attachments) ? data.attachments : [],
           createdAt: data.createdAt || new Date().toISOString(),
           updatedAt: data.updatedAt || new Date().toISOString()
         };
@@ -310,9 +390,13 @@ export function subscribeJobCards(
 }
 
 export async function seedInitialJobCards() {
+  const actorUid = auth.currentUser?.uid;
   for (const item of INITIAL_JOB_CARDS) {
     const docRef = doc(collection(db, COLLECTION_NAME));
-    await setDoc(docRef, item);
+    await setDoc(docRef, stripUndefinedDeep({
+      ...item,
+      createdById: actorUid || item.createdById
+    }));
   }
 }
 
@@ -348,34 +432,61 @@ export function generateNextJobCardNumber(category: string, existingCards: JobCa
 
 export async function createJobCard(
   cardData: Omit<JobCard, 'id' | 'createdAt' | 'updatedAt' | 'totalLaborHours' | 'laborLogs' | 'comments' | 'createdById' | 'createdByName'>,
-  userProfile?: { uid: string; displayName: string }
+  userProfile?: { uid: string; displayName: string; role?: JobCardActorContext['role']; email?: string | null }
 ): Promise<string> {
   const docRef = doc(collection(db, COLLECTION_NAME));
   const uid = auth.currentUser?.uid || userProfile?.uid || 'anonymous-user';
-  const name = auth.currentUser?.displayName || auth.currentUser?.email || userProfile?.displayName || 'Authorized Staff';
+  const name = userProfile?.displayName || auth.currentUser?.displayName || auth.currentUser?.email || 'Authorized Staff';
 
-  const newCard: Omit<JobCard, 'id'> = {
+  const requestedStatus: JobCardStatus =
+    cardData.status === 'Completed' || cardData.status === 'Cancelled'
+      ? (canAssignOrAcceptJobCard(userProfile?.role, userProfile?.email || auth.currentUser?.email)
+          ? cardData.status
+          : 'Draft')
+      : cardData.status;
+
+  const initialWorkflowStage =
+    cardData.workflowStage || mapLegacyStatusToWorkflowStage(requestedStatus);
+  const nowIso = new Date().toISOString();
+  const initialHistoryEntry = createStatusHistoryEntry({
+    toStage: initialWorkflowStage,
+    toStatus: requestedStatus,
+    changedBy: name,
+    changedByUid: uid,
+    changedByRole: userProfile?.role || undefined,
+    changedAt: nowIso,
+    reason: cardData.parentJobCardNumber
+      ? `Spawned companion job card linked to ${cardData.parentJobCardNumber}`
+      : 'Work requisition logged'
+  });
+
+  const newCard = stripUndefinedDeep({
     ...cardData,
+    status: requestedStatus,
+    workflowStage: initialWorkflowStage,
+    statusHistory: [initialHistoryEntry],
     totalLaborHours: 0,
     laborLogs: [],
     comments: [
       {
         id: `com-init-${Date.now()}`,
         author: name,
-        message: `Job Card created by ${name}`,
-        timestamp: new Date().toISOString(),
-        type: 'system'
+        message: cardData.parentJobCardNumber
+          ? `Linked companion Job Card created by ${name} (Parent: ${cardData.parentJobCardNumber})`
+          : `Job Card created by ${name}`,
+        timestamp: nowIso,
+        type: 'system' as const
       }
     ],
     createdById: uid,
     createdByName: name,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  };
+    createdAt: nowIso,
+    updatedAt: nowIso
+  });
 
   try {
     await setDoc(docRef, newCard);
-    
+
     // Publish Domain Event for cross-module orchestration
     eventBus.publish('JOB_CARD_CREATED', 'maintenance', {
       jobCardId: docRef.id,
@@ -389,6 +500,20 @@ export async function createJobCard(
       targetDate: newCard.targetDate
     }).catch(err => console.error('[EventBus] Error publishing JOB_CARD_CREATED:', err));
 
+    emitAppNotification({
+      type: newCard.priority === 'Emergency' ? 'JOB_CARD_EMERGENCY' : 'JOB_CARD_CREATED',
+      title:
+        newCard.priority === 'Emergency'
+          ? `🚨 Emergency Job Card ${newCard.jobCardNumber}`
+          : `New Job Card ${newCard.jobCardNumber}`,
+      message: `${newCard.equipmentName} (${newCard.department}): ${newCard.description.slice(0, 140)}`,
+      severity: newCard.priority === 'Emergency' ? 'EMERGENCY' : 'ACTION_REQUIRED',
+      jobCardId: docRef.id,
+      jobCardNumber: newCard.jobCardNumber,
+      department: newCard.department,
+      createdBy: name
+    }).catch(() => {});
+
     return docRef.id;
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, `${COLLECTION_NAME}/${docRef.id}`);
@@ -396,13 +521,26 @@ export async function createJobCard(
   }
 }
 
-export async function updateJobCard(id: string, updates: Partial<JobCard>): Promise<void> {
+export async function updateJobCard(
+  id: string,
+  updates: Partial<JobCard>,
+  options?: {
+    actor?: JobCardActorContext;
+    existingCard?: Pick<JobCard, 'status' | 'createdById'>;
+  }
+): Promise<void> {
+  if (options?.actor && options?.existingCard) {
+    if (!canEditJobCard(options.actor, options.existingCard)) {
+      throw new Error(getJobCardPermissionReason('edit', options.actor.role));
+    }
+  }
   const docRef = doc(db, COLLECTION_NAME, id);
+  const cleanUpdates = stripUndefinedDeep({
+    ...updates,
+    updatedAt: new Date().toISOString()
+  });
   try {
-    await updateDoc(docRef, {
-      ...updates,
-      updatedAt: new Date().toISOString()
-    });
+    await updateDoc(docRef, cleanUpdates);
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `${COLLECTION_NAME}/${id}`);
     throw error;
@@ -412,13 +550,33 @@ export async function updateJobCard(id: string, updates: Partial<JobCard>): Prom
 export async function updateJobCardStatus(
   card: JobCard,
   newStatus: JobCardStatus,
-  authorName: string
+  authorName: string,
+  actor?: JobCardActorContext
 ): Promise<void> {
+  if (actor && !canTransitionJobCardStatus(actor, card, newStatus)) {
+    throw new Error(getJobCardPermissionReason('complete', actor.role));
+  }
+
+  const fromStage = resolveWorkflowStage(card);
+  const toStage = mapLegacyStatusToWorkflowStage(newStatus, fromStage);
+  const nowIso = new Date().toISOString();
+
+  const historyEntry = createStatusHistoryEntry({
+    fromStage,
+    toStage,
+    fromStatus: card.status,
+    toStatus: newStatus,
+    changedBy: authorName,
+    changedByUid: actor?.uid || auth.currentUser?.uid || undefined,
+    changedByRole: actor?.role || undefined,
+    changedAt: nowIso
+  });
+
   const comment: ActivityComment = {
     id: `com-status-${Date.now()}`,
     author: authorName,
     message: `Status changed from ${card.status} to ${newStatus}`,
-    timestamp: new Date().toISOString(),
+    timestamp: nowIso,
     type: 'status_change'
   };
 
@@ -426,6 +584,8 @@ export async function updateJobCardStatus(
 
   await updateJobCard(card.id, {
     status: newStatus,
+    workflowStage: toStage,
+    statusHistory: appendStatusHistory(card.statusHistory, historyEntry),
     comments: updatedComments
   });
 
@@ -437,8 +597,116 @@ export async function updateJobCardStatus(
     equipmentName: card.equipmentName,
     previousStatus: card.status,
     newStatus,
+    workflowStage: toStage,
     actor: authorName
   }).catch(err => console.error('[EventBus] Error publishing JOB_CARD_STATUS_CHANGED:', err));
+}
+
+export async function transitionJobCardWorkflowStage(
+  card: JobCard,
+  targetStage: JobCardWorkflowStage,
+  params: {
+    actorName: string;
+    reason?: string;
+    actor?: JobCardActorContext;
+  }
+): Promise<void> {
+  if (params.actor && !canTransitionWorkflowStage(params.actor, card, targetStage)) {
+    throw new Error(
+      targetStage === 'CLOSED'
+        ? getJobCardPermissionReason('hod_signoff', params.actor.role)
+        : getJobCardPermissionReason('complete', params.actor.role)
+    );
+  }
+
+  const fromStage = resolveWorkflowStage(card);
+  if (fromStage === targetStage) return;
+
+  const { status: mappedStatus, requisitionStage: mappedReqStage } = mapWorkflowStageToLegacy(targetStage);
+  const stageMeta = getWorkflowStageMeta(targetStage);
+  const nowIso = new Date().toISOString();
+
+  const historyEntry = createStatusHistoryEntry({
+    fromStage,
+    toStage: targetStage,
+    fromStatus: card.status,
+    toStatus: mappedStatus,
+    changedBy: params.actorName,
+    changedByUid: params.actor?.uid || auth.currentUser?.uid || undefined,
+    changedByRole: params.actor?.role || undefined,
+    changedAt: nowIso,
+    reason: params.reason
+  });
+
+  const comment: ActivityComment = {
+    id: `com-stage-${Date.now()}`,
+    author: params.actorName,
+    message: `Workflow stage updated: ${getWorkflowStageMeta(fromStage).shortLabel} → ${stageMeta.label}${params.reason ? ` (${params.reason})` : ''}`,
+    timestamp: nowIso,
+    type: 'status_change'
+  };
+
+  const updates: Partial<JobCard> = {
+    workflowStage: targetStage,
+    status: mappedStatus,
+    requisitionStage: mappedReqStage,
+    statusHistory: appendStatusHistory(card.statusHistory, historyEntry),
+    comments: [...(card.comments || []), comment]
+  };
+
+  if (targetStage === 'WAITING_FOR_SHUTDOWN' || targetStage === 'WAITING_FOR_PARTS') {
+    if (params.reason) {
+      updates.holdReason = params.reason;
+    }
+  } else if (card.holdReason && targetStage === 'IN_PROGRESS') {
+    updates.holdReason = '';
+  }
+
+  if (targetStage === 'CLOSED') {
+    updates.hodSignedBy = params.actorName;
+    updates.hodDigitalSignOff = {
+      signedBy: params.actorName,
+      signedAt: nowIso,
+      notes: params.reason || 'Verified & closed via 8-stage approval workflow.'
+    };
+  }
+
+  await updateJobCard(card.id, updates);
+
+  eventBus.publish('JOB_CARD_STATUS_CHANGED', 'maintenance', {
+    jobCardId: card.id,
+    jobCardNumber: card.jobCardNumber,
+    equipmentId: card.equipmentId,
+    equipmentName: card.equipmentName,
+    previousStatus: card.status,
+    newStatus: mappedStatus,
+    workflowStage: targetStage,
+    actor: params.actorName
+  }).catch(() => {});
+
+  if (
+    targetStage === 'WAITING_FOR_PARTS' ||
+    targetStage === 'WAITING_FOR_SHUTDOWN' ||
+    targetStage === 'WORK_COMPLETE' ||
+    targetStage === 'CLOSED'
+  ) {
+    const notifType =
+      targetStage === 'WORK_COMPLETE'
+        ? 'JOB_CARD_WORK_COMPLETE'
+        : targetStage === 'CLOSED'
+        ? 'JOB_CARD_CLOSED'
+        : 'JOB_CARD_HOLD';
+    emitAppNotification({
+      type: notifType,
+      title: `${card.jobCardNumber} → ${stageMeta.label}`,
+      message: `${card.equipmentName}${params.reason ? ` (${params.reason})` : ''} updated by ${params.actorName}.`,
+      severity: targetStage === 'WORK_COMPLETE' ? 'ACTION_REQUIRED' : 'INFO',
+      jobCardId: card.id,
+      jobCardNumber: card.jobCardNumber,
+      department: card.department,
+      createdBy: params.actorName
+    }).catch(() => {});
+  }
 }
 
 export async function addLaborHours(
@@ -451,8 +719,12 @@ export async function addLaborHours(
     trade?: TechnicalTrade;
     rateType?: 'Standard' | 'Shift' | 'Standby Callout' | 'Overtime';
     shift?: ShiftGroup;
-  }
+  },
+  actor?: JobCardActorContext
 ): Promise<void> {
+  if (actor && !canLogLaborOrHandover(actor.role, actor.email)) {
+    throw new Error(getJobCardPermissionReason('labor', actor.role));
+  }
   const newLog: LaborLog = {
     id: `lab-${Date.now()}`,
     technician,
@@ -499,8 +771,12 @@ export async function addLaborHours(
 
 export async function addShiftHandover(
   card: JobCard,
-  handover: Omit<ShiftHandoverLog, 'id' | 'timestamp'>
+  handover: Omit<ShiftHandoverLog, 'id' | 'timestamp'>,
+  actor?: JobCardActorContext
 ): Promise<void> {
+  if (actor && !canLogLaborOrHandover(actor.role, actor.email)) {
+    throw new Error(getJobCardPermissionReason('labor', actor.role));
+  }
   const newHandover: ShiftHandoverLog = {
     id: `handover-${Date.now()}`,
     timestamp: new Date().toISOString(),
@@ -568,7 +844,13 @@ export async function addJobCardComment(
   });
 }
 
-export async function deleteJobCard(id: string): Promise<void> {
+export async function deleteJobCard(
+  id: string,
+  actor?: JobCardActorContext
+): Promise<void> {
+  if (actor && !canDeleteJobCard(actor.role, actor.email)) {
+    throw new Error(getJobCardPermissionReason('delete', actor.role));
+  }
   const docRef = doc(db, COLLECTION_NAME, id);
   try {
     await deleteDoc(docRef);
@@ -591,27 +873,47 @@ export async function acceptAndAssignRequisition(
     shift?: ShiftGroup;
     targetDate?: string;
     notes?: string;
-  }
+  },
+  actor?: JobCardActorContext
 ): Promise<void> {
+  if (actor && !canAssignOrAcceptJobCard(actor.role, actor.email)) {
+    throw new Error(getJobCardPermissionReason('assign', actor.role));
+  }
+  const nowIso = new Date().toISOString();
+  const fromStage = resolveWorkflowStage(card);
+  const historyEntry = createStatusHistoryEntry({
+    fromStage,
+    toStage: 'ACCEPTED',
+    fromStatus: card.status,
+    toStatus: 'In Progress',
+    changedBy: params.supervisorName,
+    changedByUid: actor?.uid || auth.currentUser?.uid || undefined,
+    changedByRole: actor?.role || undefined,
+    changedAt: nowIso,
+    reason: `Assigned to ${params.artisanName} (${params.trade || card.tradeRequired || 'Maintenance'})`
+  });
+
   const comment: ActivityComment = {
     id: `com-accept-${Date.now()}`,
     author: params.supervisorName,
     message: `Requisition accepted by ${params.supervisorName}. Assigned to Artisan: ${params.artisanName} (${params.trade || card.tradeRequired || 'Maintenance'})${params.shift ? ` on ${params.shift}` : ''}.${params.notes ? ` Instructions: "${params.notes}"` : ''}`,
-    timestamp: new Date().toISOString(),
+    timestamp: nowIso,
     type: 'system'
   };
 
   const updatedComments = [...(card.comments || []), comment];
 
   await updateJobCard(card.id, {
+    workflowStage: 'ACCEPTED',
     requisitionStage: 'Accepted',
     status: 'In Progress',
+    statusHistory: appendStatusHistory(card.statusHistory, historyEntry),
     assignedSupervisor: params.supervisorName,
     assignedTo: params.artisanName,
     tradeRequired: params.trade || card.tradeRequired,
     shiftAssigned: params.shift || card.shiftAssigned,
     targetDate: params.targetDate || card.targetDate,
-    acceptedAt: new Date().toISOString(),
+    acceptedAt: nowIso,
     acceptedBy: params.supervisorName,
     comments: updatedComments
   });
@@ -621,7 +923,19 @@ export async function acceptAndAssignRequisition(
     jobCardNumber: card.jobCardNumber,
     previousStatus: card.status,
     newStatus: 'In Progress',
+    workflowStage: 'ACCEPTED',
     actor: params.supervisorName
+  }).catch(() => {});
+
+  emitAppNotification({
+    type: 'JOB_CARD_ASSIGNED',
+    title: `${card.jobCardNumber} Accepted & Assigned`,
+    message: `Assigned to ${params.artisanName} on ${card.equipmentName}.`,
+    severity: 'INFO',
+    jobCardId: card.id,
+    jobCardNumber: card.jobCardNumber,
+    department: card.department,
+    createdBy: params.supervisorName
   }).catch(() => {});
 }
 
@@ -635,9 +949,13 @@ export async function addSparePartRequisition(
     requestedBy: string;
     markAsPendingSpares?: boolean;
     unitCostEmalangeni?: number;
-  }
+  },
+  actor?: JobCardActorContext
 ): Promise<void> {
-  const newItem = {
+  if (actor && !canRequestSpares(actor.role, actor.email)) {
+    throw new Error(getJobCardPermissionReason('request_spares', actor.role));
+  }
+  const newItem = stripUndefinedDeep({
     id: `part-${Date.now()}`,
     partDescription: part.partDescription,
     quantity: part.quantity,
@@ -647,7 +965,7 @@ export async function addSparePartRequisition(
     requestedAt: new Date().toISOString(),
     status: 'Requested' as const,
     unitCostEmalangeni: part.unitCostEmalangeni
-  };
+  });
 
   const updatedSpares = [...(card.sparesRequested || []), newItem];
 
@@ -667,8 +985,26 @@ export async function addSparePartRequisition(
   };
 
   if (part.markAsPendingSpares) {
+    const nowIso = new Date().toISOString();
+    const fromStage = resolveWorkflowStage(card);
     updates.status = 'Pending Spares';
     updates.requisitionStage = 'Pending Spares';
+    updates.workflowStage = 'WAITING_FOR_PARTS';
+    updates.holdReason = `Awaiting ${part.quantity}x ${part.partDescription}`;
+    updates.statusHistory = appendStatusHistory(
+      card.statusHistory,
+      createStatusHistoryEntry({
+        fromStage,
+        toStage: 'WAITING_FOR_PARTS',
+        fromStatus: card.status,
+        toStatus: 'Pending Spares',
+        changedBy: part.requestedBy,
+        changedByUid: actor?.uid || auth.currentUser?.uid || undefined,
+        changedByRole: actor?.role || undefined,
+        changedAt: nowIso,
+        reason: `Waiting for spare part: ${part.partDescription}`
+      })
+    );
   }
 
   await updateJobCard(card.id, updates);
@@ -680,8 +1016,12 @@ export async function issueSparePart(
   params: {
     issuedBy: string;
     storeVoucherNumber: string;
-  }
+  },
+  actor?: JobCardActorContext
 ): Promise<void> {
+  if (actor && !canIssueSpares(actor.role, actor.email)) {
+    throw new Error(getJobCardPermissionReason('issue_spares', actor.role));
+  }
   const spares = card.sparesRequested || [];
   const target = spares.find((p) => p.id === partId);
   if (!target) return;
@@ -722,8 +1062,12 @@ export async function recordArtisanHandback(
     hours: number;
     handbackNotes: string;
     trade?: TechnicalTrade;
-  }
+  },
+  actor?: JobCardActorContext
 ): Promise<void> {
+  if (actor && !canRecordArtisanHandback(actor.role, actor.email)) {
+    throw new Error(getJobCardPermissionReason('handback', actor.role));
+  }
   // Create labor log from physical hours
   const newLog: LaborLog = {
     id: `lab-handback-${Date.now()}`,
@@ -748,8 +1092,24 @@ export async function recordArtisanHandback(
     type: 'system'
   };
 
+  const nowIso = new Date().toISOString();
+  const fromStage = resolveWorkflowStage(card);
+  const historyEntry = createStatusHistoryEntry({
+    fromStage,
+    toStage: 'WORK_COMPLETE',
+    fromStatus: card.status,
+    toStatus: 'In Progress',
+    changedBy: params.supervisorName,
+    changedByUid: actor?.uid || auth.currentUser?.uid || undefined,
+    changedByRole: actor?.role || undefined,
+    changedAt: nowIso,
+    reason: `Artisan slip handback logged (${params.hours}h by ${params.artisanName})`
+  });
+
   await updateJobCard(card.id, {
+    workflowStage: 'WORK_COMPLETE',
     requisitionStage: 'Artisan Completed',
+    statusHistory: appendStatusHistory(card.statusHistory, historyEntry),
     completedByArtisan: params.artisanName,
     completionDate: params.completionDate,
     completionTime: params.completionTime,
@@ -759,6 +1119,17 @@ export async function recordArtisanHandback(
     totalLaborHours: Number(newTotalHours.toFixed(2)),
     comments: [...(card.comments || []), comment]
   });
+
+  emitAppNotification({
+    type: 'JOB_CARD_WORK_COMPLETE',
+    title: `${card.jobCardNumber} Ready for HOD Sign-Off`,
+    message: `${params.artisanName} completed work (${params.hours}h) on ${card.equipmentName}.`,
+    severity: 'ACTION_REQUIRED',
+    jobCardId: card.id,
+    jobCardNumber: card.jobCardNumber,
+    department: card.department,
+    createdBy: params.supervisorName
+  }).catch(() => {});
 }
 
 export async function closeOutJobCardHOD(
@@ -766,23 +1137,43 @@ export async function closeOutJobCardHOD(
   params: {
     hodName: string;
     notes?: string;
-  }
+  },
+  actor?: JobCardActorContext
 ): Promise<void> {
+  if (actor && !canHODSignOffJobCard(actor.role, actor.email)) {
+    throw new Error(getJobCardPermissionReason('hod_signoff', actor.role));
+  }
+  const nowIso = new Date().toISOString();
+  const fromStage = resolveWorkflowStage(card);
+  const historyEntry = createStatusHistoryEntry({
+    fromStage,
+    toStage: 'CLOSED',
+    fromStatus: card.status,
+    toStatus: 'Completed',
+    changedBy: params.hodName,
+    changedByUid: actor?.uid || auth.currentUser?.uid || undefined,
+    changedByRole: actor?.role || undefined,
+    changedAt: nowIso,
+    reason: params.notes || 'HOD Digital Sign-Off & Close-Out'
+  });
+
   const comment: ActivityComment = {
     id: `com-hod-${Date.now()}`,
     author: params.hodName,
     message: `🎖️ Official HOD Digital Sign-Off by ${params.hodName} (Engineering Manager). Job card approved, completed, and closed.${params.notes ? ` Remarks: "${params.notes}"` : ''}`,
-    timestamp: new Date().toISOString(),
+    timestamp: nowIso,
     type: 'status_change'
   };
 
   await updateJobCard(card.id, {
+    workflowStage: 'CLOSED',
     requisitionStage: 'HOD Closed',
     status: 'Completed',
+    statusHistory: appendStatusHistory(card.statusHistory, historyEntry),
     hodSignedBy: params.hodName,
     hodDigitalSignOff: {
       signedBy: params.hodName,
-      signedAt: new Date().toISOString(),
+      signedAt: nowIso,
       notes: params.notes
     },
     comments: [...(card.comments || []), comment]
@@ -793,6 +1184,171 @@ export async function closeOutJobCardHOD(
     jobCardNumber: card.jobCardNumber,
     previousStatus: card.status,
     newStatus: 'Completed',
+    workflowStage: 'CLOSED',
     actor: params.hodName
   }).catch(() => {});
 }
+
+export async function createLinkedDepartmentJobCard(
+  parentCard: JobCard,
+  params: {
+    department: string;
+    departmentCategory: string;
+    tradeRequired: TechnicalTrade;
+    assignedTo: string;
+    description: string;
+    priority: Priority;
+    shiftAssigned?: ShiftGroup;
+    targetDate?: string;
+    assignImmediately?: boolean;
+  },
+  userProfile: { uid: string; displayName: string; role?: JobCardActorContext['role']; email?: string | null },
+  existingCards: JobCard[]
+): Promise<{ childId: string; childJobCardNumber: string }> {
+  if (!canSpawnLinkedJobCard(userProfile.role, userProfile.email)) {
+    throw new Error(getJobCardPermissionReason('assign', userProfile.role));
+  }
+
+  const childJobCardNumber = generateNextJobCardNumber(params.departmentCategory, existingCards);
+  const assignNow = params.assignImmediately !== false;
+  const initialStage: JobCardWorkflowStage = assignNow ? 'ACCEPTED' : 'SUBMITTED';
+  const legacy = mapWorkflowStageToLegacy(initialStage);
+
+  const childId = await createJobCard(
+    {
+      jobCardNumber: childJobCardNumber,
+      department: params.department,
+      departmentCategory: params.departmentCategory,
+      equipmentName: parentCard.equipmentName,
+      equipmentId: parentCard.equipmentId || '',
+      equipmentCode: parentCard.equipmentCode,
+      electricalFeeder: parentCard.electricalFeeder,
+      inspectionId: parentCard.inspectionId,
+      inspectionReference: parentCard.inspectionReference,
+      equipmentSpecs: parentCard.equipmentSpecs,
+      workOrderNumber: parentCard.workOrderNumber,
+      costCenter: parentCard.costCenter,
+      requisitionType: parentCard.requisitionType || 'Normal',
+      priority: params.priority,
+      status: legacy.status,
+      workflowStage: initialStage,
+      requisitionStage: legacy.requisitionStage,
+      description: params.description,
+      assignedTo: params.assignedTo,
+      assignedSupervisor: assignNow ? userProfile.displayName : undefined,
+      acceptedBy: assignNow ? userProfile.displayName : undefined,
+      acceptedAt: assignNow ? new Date().toISOString() : undefined,
+      tradeRequired: params.tradeRequired,
+      shiftAssigned: params.shiftAssigned || parentCard.shiftAssigned || 'Shift A',
+      targetDate: params.targetDate || parentCard.targetDate,
+      originatingDepartment: parentCard.department,
+      recipientDepartment: params.department,
+      originatedBy: userProfile.displayName,
+      safetyPermits: parentCard.safetyPermits,
+      dangerTagRequired: parentCard.dangerTagRequired,
+      dangerTagNumber: parentCard.dangerTagNumber,
+      parentJobCardId: parentCard.id,
+      parentJobCardNumber: parentCard.jobCardNumber
+    },
+    userProfile
+  );
+
+  // Record a linked-spawn audit entry on the parent card (non-fatal if parent already locked by race)
+  const linkComment: ActivityComment = {
+    id: `com-link-${Date.now()}`,
+    author: userProfile.displayName,
+    message: `🔗 Spawned companion ${params.tradeRequired} job card ${childJobCardNumber} (${params.department}) assigned to ${params.assignedTo}.`,
+    timestamp: new Date().toISOString(),
+    type: 'system'
+  };
+
+  await updateJobCard(parentCard.id, {
+    comments: [...(parentCard.comments || []), linkComment]
+  }).catch((err) => console.warn('Could not append link comment to parent card:', err));
+
+  emitAppNotification({
+    type: 'COMPANION_JOB_CREATED',
+    title: `Companion Job ${childJobCardNumber} Linked to ${parentCard.jobCardNumber}`,
+    message: `${params.tradeRequired} dispatch to ${params.assignedTo} (${params.department}).`,
+    severity: 'INFO',
+    jobCardId: childId,
+    jobCardNumber: childJobCardNumber,
+    department: params.department,
+    createdBy: userProfile.displayName
+  }).catch(() => {});
+
+  return { childId, childJobCardNumber };
+}
+
+export const MAX_JOB_CARD_ATTACHMENTS = 4;
+export const MAX_JOB_CARD_ATTACHMENT_BYTES = 220_000;
+
+export async function addJobCardAttachment(
+  card: JobCard,
+  attachment: JobCardAttachment,
+  actor?: JobCardActorContext
+): Promise<void> {
+  if (actor && !canLogLaborOrHandover(actor.role, actor.email)) {
+    throw new Error(getJobCardPermissionReason('labor', actor.role));
+  }
+  const existing = Array.isArray(card.attachments) ? card.attachments : [];
+  if (existing.length >= MAX_JOB_CARD_ATTACHMENTS) {
+    throw new Error(`Maximum ${MAX_JOB_CARD_ATTACHMENTS} attachments allowed per Job Card.`);
+  }
+  if (!attachment.dataUrl || attachment.dataUrl.length > MAX_JOB_CARD_ATTACHMENT_BYTES) {
+    throw new Error('Attachment exceeds the 220 KB size limit.');
+  }
+
+  const nowIso = new Date().toISOString();
+  const cleanAttachment: JobCardAttachment = stripUndefinedDeep({
+    ...attachment,
+    name: attachment.name.slice(0, 80),
+    uploadedBy: attachment.uploadedBy.slice(0, 120),
+    uploadedByUid: actor?.uid || auth.currentUser?.uid || undefined,
+    uploadedAt: attachment.uploadedAt || nowIso,
+    caption: attachment.caption?.slice(0, 200)
+  });
+
+  const comment: ActivityComment = {
+    id: `com-att-${Date.now()}`,
+    author: cleanAttachment.uploadedBy,
+    message: `📎 Attached [${cleanAttachment.category}]: ${cleanAttachment.name}${cleanAttachment.caption ? ` — "${cleanAttachment.caption}"` : ''}`,
+    timestamp: nowIso,
+    type: 'system'
+  };
+
+  await updateJobCard(card.id, {
+    attachments: [...existing, cleanAttachment],
+    comments: [...(card.comments || []), comment]
+  });
+}
+
+export async function removeJobCardAttachment(
+  card: JobCard,
+  attachmentId: string,
+  actorName: string,
+  actor?: JobCardActorContext
+): Promise<void> {
+  if (actor && !canAssignOrAcceptJobCard(actor.role, actor.email)) {
+    throw new Error(getJobCardPermissionReason('assign', actor.role));
+  }
+  const existing = Array.isArray(card.attachments) ? card.attachments : [];
+  const target = existing.find((a) => a.id === attachmentId);
+  if (!target) return;
+
+  const updated = existing.filter((a) => a.id !== attachmentId);
+  const nowIso = new Date().toISOString();
+  const comment: ActivityComment = {
+    id: `com-att-rm-${Date.now()}`,
+    author: actorName,
+    message: `🗑️ Removed attachment: ${target.name}`,
+    timestamp: nowIso,
+    type: 'system'
+  };
+
+  await updateJobCard(card.id, {
+    attachments: updated,
+    comments: [...(card.comments || []), comment]
+  });
+}
+

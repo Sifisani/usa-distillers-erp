@@ -31,37 +31,63 @@ service cloud.firestore {
     function isAdmin() {
       return isSignedIn() && (
         (request.auth.token.email == 'sifisani@gmail.com' && request.auth.token.email_verified == true) ||
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'Admin'
+        )
       );
     }
 
-    // Pillar 4: Tiered Identity Logic — Authorized Electrical Engineering Roles
+    function hasUserProfile() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function getUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    // Pillar 4: Tiered Identity Logic — Authorized Engineering & Operations Roles
     function isElectricalEngineer() {
       return isAdmin() || (
-        isSignedIn() &&
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['Admin', 'Manager', 'Supervisor']
+        hasUserProfile() &&
+        getUserRole() in ['Admin', 'Manager', 'Supervisor']
       );
     }
 
     function isEngineeringAdmin() {
       return isAdmin() || (
-        isSignedIn() &&
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['Admin', 'Manager']
+        hasUserProfile() &&
+        getUserRole() in ['Admin', 'Manager']
       );
     }
 
     function isInspectionSubmitter() {
       return isAdmin() || (
         isSignedIn() && (
-          !exists(/databases/$(database)/documents/users/$(request.auth.uid)) ||
-          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['Admin', 'Manager', 'Supervisor', 'Technician']
+          !hasUserProfile() ||
+          getUserRole() in ['Admin', 'Manager', 'Supervisor', 'Technician']
         )
       );
     }
 
-    // Job Card validation
+    function isJobCardSupervisor() {
+      return isElectricalEngineer();
+    }
+
+    function isJobCardManager() {
+      return isEngineeringAdmin();
+    }
+
+    function isJobCardTechnician() {
+      return hasUserProfile() && getUserRole() == 'Technician';
+    }
+
+    function isJobCardStoreman() {
+      return hasUserProfile() && getUserRole() == 'Storeman';
+    }
+
+    // Job Card validation (including 8-stage workflow, multi-dept links, attachments, Works Requisition, Labor, Spares, and HOD Sign-off)
     function isValidJobCard(data) {
       return data.jobCardNumber is string && data.jobCardNumber.size() > 0 && data.jobCardNumber.size() <= 50 &&
              data.department is string && data.department.size() > 0 && data.department.size() <= 100 &&
@@ -69,16 +95,141 @@ service cloud.firestore {
              data.priority in ['Low', 'Medium', 'High', 'Emergency'] &&
              data.status in ['Draft', 'In Progress', 'Pending Spares', 'Completed', 'Cancelled'] &&
              data.description is string && data.description.size() <= 4000 &&
-             data.assignedTo is string && data.assignedTo.size() <= 100 &&
+             data.assignedTo is string && data.assignedTo.size() <= 120 &&
+             (!('departmentCategory' in data) || (data.departmentCategory is string && data.departmentCategory.size() <= 100)) &&
+             (!('equipmentId' in data) || (data.equipmentId is string && data.equipmentId.size() <= 128)) &&
              (!('equipmentCode' in data) || (data.equipmentCode is string && data.equipmentCode.size() <= 50)) &&
              (!('electricalFeeder' in data) || (data.electricalFeeder is string && data.electricalFeeder.size() <= 150)) &&
              (!('inspectionId' in data) || (data.inspectionId is string && data.inspectionId.size() <= 128)) &&
              (!('inspectionReference' in data) || (data.inspectionReference is string && data.inspectionReference.size() <= 60)) &&
+             (!('targetDate' in data) || (data.targetDate is string && data.targetDate.size() <= 30)) &&
+             (!('totalLaborHours' in data) || (data.totalLaborHours is number && data.totalLaborHours >= 0)) &&
              (!('createdById' in data) || (data.createdById is string && data.createdById.size() <= 128)) &&
+             (!('createdByName' in data) || (data.createdByName is string && data.createdByName.size() <= 120)) &&
+             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 40)) &&
+             (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 40)) &&
+             (!('workOrderNumber' in data) || (data.workOrderNumber is string && data.workOrderNumber.size() <= 50)) &&
+             (!('requisitionType' in data) || data.requisitionType in ['Normal', 'Call Out', 'Stop Day']) &&
+             (!('costCenter' in data) || (data.costCenter is string && data.costCenter.size() <= 40)) &&
+             (!('dangerTagRequired' in data) || data.dangerTagRequired is bool) &&
+             (!('dangerTagNumber' in data) || (data.dangerTagNumber is string && data.dangerTagNumber.size() <= 50)) &&
+             (!('recipientDepartment' in data) || (data.recipientDepartment is string && data.recipientDepartment.size() <= 100)) &&
+             (!('originatingDepartment' in data) || (data.originatingDepartment is string && data.originatingDepartment.size() <= 100)) &&
+             (!('originatedBy' in data) || (data.originatedBy is string && data.originatedBy.size() <= 120)) &&
+             (!('originatedTime' in data) || (data.originatedTime is string && data.originatedTime.size() <= 30)) &&
+             (!('originatedSignature' in data) || (data.originatedSignature is string && data.originatedSignature.size() <= 120)) &&
+             (!('physicalSlipLogged' in data) || data.physicalSlipLogged is bool) &&
+             (!('requisitionStage' in data) || data.requisitionStage in ['Pending Acceptance', 'Accepted', 'In Progress', 'Pending Spares', 'Artisan Completed', 'HOD Closed']) &&
+             (!('workflowStage' in data) || data.workflowStage in ['SUBMITTED', 'ACCEPTED', 'IN_PROGRESS', 'WAITING_FOR_PARTS', 'WAITING_FOR_SHUTDOWN', 'WORK_COMPLETE', 'CLOSED', 'CANCELLED']) &&
+             (!('holdReason' in data) || (data.holdReason is string && data.holdReason.size() <= 500)) &&
+             (!('statusHistory' in data) || (data.statusHistory is list && data.statusHistory.size() <= 200)) &&
+             (!('parentJobCardId' in data) || (data.parentJobCardId is string && data.parentJobCardId.size() <= 128)) &&
+             (!('parentJobCardNumber' in data) || (data.parentJobCardNumber is string && data.parentJobCardNumber.size() <= 50)) &&
+             (!('attachments' in data) || (data.attachments is list && data.attachments.size() <= 4)) &&
+             (!('assignedSupervisor' in data) || (data.assignedSupervisor is string && data.assignedSupervisor.size() <= 120)) &&
+             (!('acceptedAt' in data) || (data.acceptedAt is string && data.acceptedAt.size() <= 40)) &&
+             (!('acceptedBy' in data) || (data.acceptedBy is string && data.acceptedBy.size() <= 120)) &&
+             (!('completedByArtisan' in data) || (data.completedByArtisan is string && data.completedByArtisan.size() <= 120)) &&
+             (!('artisanSignature' in data) || (data.artisanSignature is string && data.artisanSignature.size() <= 120)) &&
+             (!('artisanHandbackNotes' in data) || (data.artisanHandbackNotes is string && data.artisanHandbackNotes.size() <= 2000)) &&
+             (!('completionDate' in data) || (data.completionDate is string && data.completionDate.size() <= 20)) &&
+             (!('completionTime' in data) || (data.completionTime is string && data.completionTime.size() <= 20)) &&
+             (!('completionHours' in data) || (data.completionHours is number && data.completionHours >= 0)) &&
+             (!('hodSignedBy' in data) || (data.hodSignedBy is string && data.hodSignedBy.size() <= 120)) &&
+             (!('hodDigitalSignOff' in data) || (data.hodDigitalSignOff is map && data.hodDigitalSignOff.size() <= 10)) &&
+             (!('qcSignedBy' in data) || (data.qcSignedBy is string && data.qcSignedBy.size() <= 120)) &&
              (!('laborLogs' in data) || (data.laborLogs is list && data.laborLogs.size() <= 200)) &&
              (!('comments' in data) || (data.comments is list && data.comments.size() <= 500)) &&
              (!('sparesRequested' in data) || (data.sparesRequested is list && data.sparesRequested.size() <= 100)) &&
              (!('shiftHandovers' in data) || (data.shiftHandovers is list && data.shiftHandovers.size() <= 100));
+    }
+
+    function jobCardImmutableAttributionPreserved() {
+      return (!('createdById' in existing()) || incoming().createdById == existing().createdById) &&
+             (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt) &&
+             (!('parentJobCardId' in existing()) || incoming().parentJobCardId == existing().parentJobCardId) &&
+             (!('parentJobCardNumber' in existing()) || incoming().parentJobCardNumber == existing().parentJobCardNumber) &&
+             (!('parentJobCardId' in incoming().diff(existing()).affectedKeys())) &&
+             (!('parentJobCardNumber' in incoming().diff(existing()).affectedKeys()));
+    }
+
+    function isValidTechnicianJobCardUpdate() {
+      return isJobCardTechnician() &&
+             incoming().diff(existing()).affectedKeys().hasOnly([
+               'comments',
+               'laborLogs',
+               'totalLaborHours',
+               'shiftHandovers',
+               'shiftAssigned',
+               'assignedTo',
+               'sparesRequested',
+               'attachments',
+               'status',
+               'requisitionStage',
+               'workflowStage',
+               'statusHistory',
+               'holdReason',
+               'safetyPermits',
+               'updatedAt'
+             ]) &&
+             !(incoming().status in ['Completed', 'Cancelled']) &&
+             (!('requisitionStage' in incoming()) || !(incoming().requisitionStage in ['Artisan Completed', 'HOD Closed'])) &&
+             (!('workflowStage' in incoming().diff(existing()).affectedKeys()) || incoming().workflowStage in ['IN_PROGRESS', 'WAITING_FOR_PARTS']) &&
+             (!('holdReason' in incoming().diff(existing()).affectedKeys()) || incoming().workflowStage in ['IN_PROGRESS', 'WAITING_FOR_PARTS']);
+    }
+
+    function isValidStoremanJobCardUpdate() {
+      return isJobCardStoreman() &&
+             incoming().diff(existing()).affectedKeys().hasOnly([
+               'sparesRequested',
+               'comments',
+               'status',
+               'requisitionStage',
+               'workflowStage',
+               'statusHistory',
+               'holdReason',
+               'updatedAt'
+             ]) &&
+             !(incoming().status in ['Completed', 'Cancelled']) &&
+             (!('requisitionStage' in incoming()) || !(incoming().requisitionStage in ['Artisan Completed', 'HOD Closed'])) &&
+             (!('workflowStage' in incoming().diff(existing()).affectedKeys()) || incoming().workflowStage in ['IN_PROGRESS', 'WAITING_FOR_PARTS']) &&
+             (!('holdReason' in incoming().diff(existing()).affectedKeys()) || incoming().workflowStage in ['IN_PROGRESS', 'WAITING_FOR_PARTS']);
+    }
+
+    function isValidOperatorJobCardUpdate() {
+      return isSignedIn() && (
+        incoming().diff(existing()).affectedKeys().hasOnly(['comments', 'updatedAt']) ||
+        (
+          existing().status == 'Draft' &&
+          existing().createdById == request.auth.uid &&
+          incoming().status == 'Draft' &&
+          !incoming().diff(existing()).affectedKeys().hasAny([
+            'hodSignedBy',
+            'hodDigitalSignOff',
+            'requisitionStage',
+            'workflowStage',
+            'statusHistory',
+            'holdReason',
+            'parentJobCardId',
+            'parentJobCardNumber',
+            'attachments',
+            'assignedSupervisor',
+            'acceptedAt',
+            'acceptedBy',
+            'completedByArtisan',
+            'artisanSignature',
+            'artisanHandbackNotes',
+            'completionDate',
+            'completionTime',
+            'completionHours',
+            'sparesRequested',
+            'laborLogs',
+            'totalLaborHours',
+            'shiftHandovers',
+            'qcSignedBy'
+          ])
+        )
+      );
     }
 
     // Equipment validation
@@ -99,7 +250,7 @@ service cloud.firestore {
       return data.uid is string && data.uid.size() > 0 && data.uid.size() <= 128 &&
              data.email is string && data.email.size() <= 150 &&
              data.displayName is string && data.displayName.size() > 0 && data.displayName.size() <= 100 &&
-             data.role in ['Admin', 'Supervisor', 'Technician', 'Operator', 'Manager'];
+             data.role in ['Admin', 'Supervisor', 'Technician', 'Operator', 'Manager', 'Storeman'];
     }
 
     // Stores Issue Requisition Slip validation
@@ -226,21 +377,79 @@ service cloud.firestore {
              data.updatedAt is timestamp && data.updatedAt == request.time;
     }
 
+    // Configurable Organization Master Data validation
+    function isValidOrgMasterData(data) {
+      return data.id == 'plant-default' &&
+             data.departments is list && data.departments.size() > 0 && data.departments.size() <= 30 &&
+             data.trades is list && data.trades.size() > 0 && data.trades.size() <= 20 &&
+             data.shifts is list && data.shifts.size() > 0 && data.shifts.size() <= 20 &&
+             data.standbyRoster is list && data.standbyRoster.size() > 0 && data.standbyRoster.size() <= 20 &&
+             data.version is number && data.version >= 1 &&
+             data.updatedBy is string && data.updatedBy.size() > 0 && data.updatedBy.size() <= 120 &&
+             data.updatedByUid is string && data.updatedByUid.size() > 0 && data.updatedByUid.size() <= 128 &&
+             data.updatedAt is string && data.updatedAt.size() > 0 && data.updatedAt.size() <= 40;
+    }
+
+    // Persistent App Notification validation
+    function isValidAppNotification(data) {
+      return data.type in [
+               'JOB_CARD_CREATED',
+               'JOB_CARD_EMERGENCY',
+               'JOB_CARD_ASSIGNED',
+               'JOB_CARD_HOLD',
+               'JOB_CARD_WORK_COMPLETE',
+               'JOB_CARD_CLOSED',
+               'COMPANION_JOB_CREATED'
+             ] &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 120 &&
+             data.message is string && data.message.size() <= 400 &&
+             data.severity in ['INFO', 'ACTION_REQUIRED', 'EMERGENCY'] &&
+             data.createdBy is string && data.createdBy.size() > 0 && data.createdBy.size() <= 120 &&
+             data.createdByUid is string && data.createdByUid.size() > 0 && data.createdByUid.size() <= 128 &&
+             data.createdAt is string && data.createdAt.size() > 0 && data.createdAt.size() <= 40 &&
+             data.readByUids is list && data.readByUids.size() <= 500 &&
+             (!('jobCardId' in data) || (data.jobCardId is string && data.jobCardId.size() <= 128)) &&
+             (!('jobCardNumber' in data) || (data.jobCardNumber is string && data.jobCardNumber.size() <= 50)) &&
+             (!('department' in data) || (data.department is string && data.department.size() <= 100)) &&
+             (!('targetRoles' in data) || (data.targetRoles is list && data.targetRoles.size() <= 6));
+    }
+
     // Startup connection check document (read-only)
     match /test/connection {
       allow get: if true;
     }
 
-    // Job Cards Collection: Plant-wide maintenance work orders
+    // Job Cards Collection: Plant-wide maintenance work orders with 8-stage workflow, multi-dept links & tiered RBAC
     match /jobCards/{jobCardId} {
       allow get: if isSignedIn() && isValidId(jobCardId);
       allow list: if isSignedIn();
-      allow create: if isSignedIn() && isValidId(jobCardId) && isValidJobCard(incoming());
+      allow create: if isSignedIn() && isValidId(jobCardId) &&
+                       isValidJobCard(incoming()) &&
+                       (incoming().createdById == request.auth.uid || isAdmin()) &&
+                       (!(incoming().status in ['Completed', 'Cancelled']) || isJobCardSupervisor()) &&
+                       (!('workflowStage' in incoming()) || !(incoming().workflowStage in ['CLOSED', 'CANCELLED', 'WORK_COMPLETE', 'WAITING_FOR_SHUTDOWN']) || isJobCardSupervisor()) &&
+                       (!('workflowStage' in incoming()) || incoming().workflowStage != 'CLOSED' || isJobCardManager()) &&
+                       (!('parentJobCardId' in incoming()) || isJobCardSupervisor());
       allow update: if isSignedIn() && isValidId(jobCardId) && isValidJobCard(incoming()) && (
         isAdmin() ||
-        !(existing().status in ['Completed', 'Cancelled'])
+        (
+          !(existing().status in ['Completed', 'Cancelled']) &&
+          jobCardImmutableAttributionPreserved() &&
+          (
+            isJobCardManager() ||
+            (
+              isJobCardSupervisor() &&
+              !incoming().diff(existing()).affectedKeys().hasAny(['hodSignedBy', 'hodDigitalSignOff']) &&
+              (!('requisitionStage' in incoming()) || incoming().requisitionStage != 'HOD Closed') &&
+              (!('workflowStage' in incoming()) || incoming().workflowStage != 'CLOSED')
+            ) ||
+            isValidTechnicianJobCardUpdate() ||
+            isValidStoremanJobCardUpdate() ||
+            isValidOperatorJobCardUpdate()
+          )
+        )
       );
-      allow delete: if isAdmin() || (isSignedIn() && existing().createdById == request.auth.uid);
+      allow delete: if isAdmin();
     }
 
     // Equipment Collection: Tiered RBAC — Engineers control topology/registry, Technicians log inspections only
@@ -357,6 +566,40 @@ service cloud.firestore {
                        isValidInspectionTemplate(incoming()) &&
                        incoming().updatedByUid == request.auth.uid;
       allow delete: if false;
+    }
+
+    // Configurable Plant Organization Master Data (Managers / Admins only)
+    match /orgMasterData/{configId} {
+      allow get: if isSignedIn() && configId == 'plant-default';
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() &&
+                       configId == 'plant-default' &&
+                       isEngineeringAdmin() &&
+                       isValidOrgMasterData(incoming()) &&
+                       incoming().updatedByUid == request.auth.uid;
+      allow update: if isSignedIn() &&
+                       configId == 'plant-default' &&
+                       isEngineeringAdmin() &&
+                       isValidOrgMasterData(incoming()) &&
+                       incoming().updatedByUid == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // Real-Time Plant Workflow Notifications & Read Receipts
+    match /notifications/{notificationId} {
+      allow get: if isSignedIn() && isValidId(notificationId);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() &&
+                       isValidId(notificationId) &&
+                       isValidAppNotification(incoming()) &&
+                       incoming().createdByUid == request.auth.uid;
+      allow update: if isSignedIn() &&
+                       isValidId(notificationId) &&
+                       isValidAppNotification(incoming()) && (
+        isAdmin() ||
+        incoming().diff(existing()).affectedKeys().hasOnly(['readByUids'])
+      );
+      allow delete: if isAdmin();
     }
 
     // User Profiles Collection (PII isolated to owner or admin)

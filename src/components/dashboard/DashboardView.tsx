@@ -1,20 +1,20 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
   ClipboardList,
   AlertTriangle,
   Package,
   Clock,
-  TrendingUp,
   Cpu,
   ArrowRight,
-  Flame,
   CheckCircle2,
-  Calendar,
-  Layers,
   Wrench,
-  Users
+  Timer,
+  Gauge,
+  GitBranch,
+  Flame
 } from 'lucide-react';
 import { JobCard, Equipment } from '../../types';
+import { computeDirectorKPIs } from '../../core/jobcards/kpis';
 
 interface DashboardViewProps {
   jobCards: JobCard[];
@@ -31,14 +31,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onNavigateToEquipment,
   onOpenCreateJobCard
 }) => {
+  const kpis = useMemo(() => computeDirectorKPIs(jobCards), [jobCards]);
+
   // Metric calculations
-  const totalCards = jobCards.length;
+  const totalCards = kpis.totalCards;
   const openCards = jobCards.filter((c) => c.status !== 'Completed' && c.status !== 'Cancelled');
   const emergencyCards = jobCards.filter((c) => c.priority === 'Emergency' && c.status !== 'Completed' && c.status !== 'Cancelled');
   const pendingSpares = jobCards.filter((c) => c.status === 'Pending Spares');
   const completedCards = jobCards.filter((c) => c.status === 'Completed');
 
-  const totalLaborHours = jobCards.reduce((acc, curr) => acc + (Number(curr.totalLaborHours) || 0), 0);
+  const totalLaborHours = kpis.totalLaborHours;
 
   // Department breakdown
   const departmentWorkload: Record<string, number> = {};
@@ -59,16 +61,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
     .slice(0, 6);
 
+  const maxStageCount = Math.max(1, ...kpis.stageBreakdown.map((s) => s.count));
+
   return (
     <div className="space-y-5 select-none">
       {/* Top Welcome / Odoo Control Strip */}
       <div className="bg-white p-4 rounded-md border border-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-base font-bold text-slate-800 tracking-tight">
-            Distillery Maintenance Overview
+            Distillery Maintenance &amp; Director KPI Overview
           </h2>
           <p className="text-xs text-slate-500">
-            Real-time status of boiler houses, turbines, fermentation bays, and mash milling lines.
+            Live work-order throughput, MTTA/MTTR latency, bottleneck aging, and machinery health across Great Usuthu Plant.
           </p>
         </div>
 
@@ -91,9 +95,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </div>
 
-      {/* 4 Odoo KPI Metric Cards */}
+      {/* 4 Primary Operational KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Card 1: Active Job Cards */}
         <div
           onClick={() => onNavigateToJobCards('In Progress')}
           className="bg-white p-4 rounded-md border border-slate-200 shadow-2xs hover:shadow-md hover:border-[#714B67]/50 transition cursor-pointer"
@@ -111,14 +114,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <span className="text-xs text-slate-500">of {totalCards} total</span>
           </div>
           <div className="mt-2 text-[11px] text-slate-500 flex items-center justify-between border-t border-slate-100 pt-2">
-            <span>Completed: {completedCards.length}</span>
+            <span>Closed: {completedCards.length} ({kpis.closureRatePercent}%)</span>
             <span className="text-[#714B67] font-semibold flex items-center gap-0.5">
               Manage <ArrowRight className="w-2.5 h-2.5" />
             </span>
           </div>
         </div>
 
-        {/* Card 2: Emergency Alerts */}
         <div
           onClick={() => onNavigateToJobCards('Emergency')}
           className={`bg-white p-4 rounded-md border shadow-2xs hover:shadow-md transition cursor-pointer ${
@@ -141,14 +143,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <span className="text-xs text-rose-600 font-medium">Critical Repairs</span>
           </div>
           <div className="mt-2 text-[11px] text-slate-500 flex items-center justify-between border-t border-slate-100 pt-2">
-            <span>Boilers & Steam Turbines</span>
+            <span>Overdue Active: <strong className={kpis.overdueOpenCount > 0 ? 'text-rose-700' : 'text-slate-700'}>{kpis.overdueOpenCount}</strong></span>
             <span className="text-rose-700 font-semibold flex items-center gap-0.5">
               Triage <ArrowRight className="w-2.5 h-2.5" />
             </span>
           </div>
         </div>
 
-        {/* Card 3: Pending Spares */}
         <div
           onClick={() => onNavigateToJobCards('Pending Spares')}
           className="bg-white p-4 rounded-md border border-slate-200 shadow-2xs hover:shadow-md hover:border-amber-300 transition cursor-pointer"
@@ -156,7 +157,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-bold text-amber-700 uppercase tracking-wider flex items-center gap-1">
               <Package className="w-3.5 h-3.5" />
-              Pending Spares
+              Holds &amp; Pending Spares
             </span>
             <div className="w-8 h-8 rounded bg-amber-50 text-amber-600 flex items-center justify-center font-bold">
               {pendingSpares.length}
@@ -164,17 +165,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
           <div className="flex items-baseline space-x-2">
             <span className="text-2xl font-bold font-mono text-amber-800">{pendingSpares.length}</span>
-            <span className="text-xs text-amber-600">Awaiting Warehouse</span>
+            <span className="text-xs text-amber-600">Awaiting Warehouse / Shutdown</span>
           </div>
           <div className="mt-2 text-[11px] text-slate-500 flex items-center justify-between border-t border-slate-100 pt-2">
-            <span>Stores Requisitions</span>
+            <span>Awaiting HOD Sign-Off: {kpis.awaitingHodSignOffCount}</span>
             <span className="text-amber-700 font-semibold flex items-center gap-0.5">
               Review <ArrowRight className="w-2.5 h-2.5" />
             </span>
           </div>
         </div>
 
-        {/* Card 4: Logged Labor Hours */}
         <div className="bg-white p-4 rounded-md border border-slate-200 shadow-2xs">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
@@ -186,11 +186,114 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
           <div className="flex items-baseline space-x-2">
             <span className="text-2xl font-bold font-mono text-slate-900">{totalLaborHours.toFixed(1)}</span>
-            <span className="text-xs text-slate-500">hours recorded</span>
+            <span className="text-xs text-slate-500">hours logged</span>
           </div>
           <div className="mt-2 text-[11px] text-slate-500 flex items-center justify-between border-t border-slate-100 pt-2">
-            <span>Across all work orders</span>
-            <span className="text-emerald-600 font-medium">Logged in live DB</span>
+            <span className="flex items-center gap-1">
+              <GitBranch className="w-3 h-3 text-[#714B67]" />
+              Multi-dept linked: {kpis.multiDeptChildCount}
+            </span>
+            <span className="text-emerald-600 font-medium">Live DB</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Director Phase 1 Pilot KPI Telemetry Strip (MTTA, MTTR, Bottleneck Aging) */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        <div className="lg:col-span-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 gap-3">
+          <div className="bg-white p-4 rounded-md border border-slate-200 shadow-2xs flex items-center justify-between">
+            <div>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
+                <Timer className="w-3.5 h-3.5 text-indigo-600" />
+                Mean Time to Acknowledge (MTTA)
+              </span>
+              <div className="mt-1 flex items-baseline gap-2">
+                <span className="text-xl font-bold font-mono text-slate-900">
+                  {kpis.meanTimeToAcknowledgeHours !== null ? `${kpis.meanTimeToAcknowledgeHours}h` : '—'}
+                </span>
+                <span className="text-[11px] text-slate-500">
+                  ({kpis.acknowledgedSampleSize} accepted)
+                </span>
+              </div>
+              <p className="text-[10px] text-slate-400 mt-0.5">Submitted → Supervisor Dispatch</p>
+            </div>
+            <div className="px-2 py-1 rounded bg-indigo-50 text-indigo-700 font-mono text-[10px] font-bold border border-indigo-200">
+              SLA &lt; 4h
+            </div>
+          </div>
+
+          <div className="bg-white p-4 rounded-md border border-slate-200 shadow-2xs flex items-center justify-between">
+            <div>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
+                <Gauge className="w-3.5 h-3.5 text-emerald-600" />
+                Mean Time to Complete (MTTR)
+              </span>
+              <div className="mt-1 flex items-baseline gap-2">
+                <span className="text-xl font-bold font-mono text-slate-900">
+                  {kpis.meanTimeToCompleteHours !== null ? `${kpis.meanTimeToCompleteHours}h` : '—'}
+                </span>
+                <span className="text-[11px] text-slate-500">
+                  ({kpis.completedSampleSize} completed)
+                </span>
+              </div>
+              <p className="text-[10px] text-slate-400 mt-0.5">Submitted → Work Complete / HOD Close</p>
+            </div>
+            <div className="px-2 py-1 rounded bg-emerald-50 text-emerald-700 font-mono text-[10px] font-bold border border-emerald-200">
+              {kpis.closureRatePercent}% Closed
+            </div>
+          </div>
+        </div>
+
+        {/* 8-Stage Pipeline Aging & Bottleneck Breakdown */}
+        <div className="lg:col-span-8 bg-white p-5 rounded-md border border-slate-200 shadow-2xs">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3 border-b border-slate-100 pb-2.5">
+            <div>
+              <h3 className="font-bold text-sm text-slate-800 flex items-center gap-1.5">
+                <Flame className="w-4 h-4 text-amber-600" />
+                Live Work-Order Stage Aging &amp; Bottleneck Monitor
+              </h3>
+              <p className="text-[11px] text-slate-500">
+                Highlights active backlog count and average residence age per Phase 1 stage.
+              </p>
+            </div>
+            {kpis.topBottleneck && (
+              <span className="px-2.5 py-0.5 rounded bg-amber-50 border border-amber-300 text-amber-900 text-[11px] font-bold">
+                Primary Bottleneck: {kpis.topBottleneck.shortLabel} ({kpis.topBottleneck.count} cards, avg {kpis.topBottleneck.avgAgeHours}h)
+              </span>
+            )}
+          </div>
+
+          <div className="space-y-2.5">
+            {kpis.stageBreakdown.map((metric) => {
+              const barWidth = Math.round((metric.count / maxStageCount) * 100);
+              return (
+                <div key={metric.stage} className="space-y-1">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className={`font-semibold ${metric.isHoldBottleneck && metric.count > 0 ? 'text-amber-800' : 'text-slate-700'}`}>
+                      {metric.label}
+                    </span>
+                    <span className="font-mono text-[11px] text-slate-600">
+                      <strong>{metric.count}</strong> open
+                      {metric.count > 0 && (
+                        <span className="text-slate-400"> • avg {metric.avgAgeHours}h (max {metric.oldestAgeHours}h)</span>
+                      )}
+                    </span>
+                  </div>
+                  <div className="w-full h-2 rounded-full bg-slate-100 overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all duration-300 ${
+                        metric.isHoldBottleneck
+                          ? 'bg-amber-500'
+                          : metric.stage === 'WORK_COMPLETE'
+                          ? 'bg-emerald-600'
+                          : 'bg-[#1b4332]'
+                      }`}
+                      style={{ width: `${metric.count === 0 ? 0 : Math.max(6, barWidth)}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -303,9 +406,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       <div className="bg-white p-5 rounded-md border border-slate-200 shadow-2xs">
         <div className="flex items-center justify-between mb-3 border-b border-slate-100 pb-2.5">
           <div className="flex items-center space-x-2">
-            <Clock className="w-4 h-4 text-[#714B67]" />
+            <CheckCircle2 className="w-4 h-4 text-[#714B67]" />
             <h3 className="font-bold text-sm text-slate-800">
-              Live Activity Stream & Supervisor Notes
+              Live Activity Stream &amp; Supervisor Notes
             </h3>
           </div>
           <span className="text-[11px] text-slate-400">Synchronized via Firestore Realtime</span>

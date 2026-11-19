@@ -26,11 +26,21 @@ import {
   ArrowRightLeft,
   RotateCcw,
   Sparkles,
-  PhoneCall
+  PhoneCall,
+  Lock,
+  GitBranch,
+  PauseCircle,
+  Paperclip,
+  Camera,
+  Eye,
+  Download
 } from 'lucide-react';
 import {
   JobCard,
   JobCardStatus,
+  JobCardWorkflowStage,
+  JobCardAttachment,
+  JobCardAttachmentCategory,
   Priority,
   LaborLog,
   ActivityComment,
@@ -40,13 +50,39 @@ import {
   ShiftGroup
 } from '../../types';
 import { useAuth } from '../../context/AuthContext';
+import { useOrgMasterData } from '../../context/OrgMasterDataContext';
+import { compressInspectionPhotoFile } from '../../core/electrical/photoUtils';
+import {
+  MAX_JOB_CARD_ATTACHMENT_BYTES,
+  MAX_JOB_CARD_ATTACHMENTS
+} from '../../services/jobCardService';
 import {
   COMPANY_ORGANOGRAM,
-  TECHNICAL_TRADES_LIST,
-  SHIFTS_LIST,
   getStaffByTrade,
   getStaffByShift
 } from '../../core/master-data/organization';
+import {
+  canAssignOrAcceptJobCard,
+  canDeleteJobCard,
+  canEditJobCard,
+  canHODSignOffJobCard,
+  canIssueSpares,
+  canLogLaborOrHandover,
+  canRecordArtisanHandback,
+  canRequestSpares,
+  canSpawnLinkedJobCard,
+  canTransitionJobCardStatus,
+  canTransitionWorkflowStage,
+  getJobCardPermissionReason,
+  isJobCardAdmin,
+  isJobCardTerminal
+} from '../../core/jobcards/permissions';
+import {
+  ACTIVE_PIPELINE_STAGES,
+  getLinkedJobCardFamily,
+  getWorkflowStageMeta,
+  resolveWorkflowStage
+} from '../../core/jobcards/workflow';
 
 interface JobCardDetailModalProps {
   card: JobCard | null;
@@ -75,9 +111,26 @@ interface JobCardDetailModalProps {
   onIssueSparePart?: (card: JobCard, partId: string, params: { issuedBy: string; storeVoucherNumber: string }) => Promise<void>;
   onRecordHandback?: (card: JobCard, params: { supervisorName: string; artisanName: string; completionDate: string; completionTime: string; hours: number; handbackNotes: string; trade?: TechnicalTrade }) => Promise<void>;
   onHODCloseOut?: (card: JobCard, params: { hodName: string; notes?: string }) => Promise<void>;
+  allJobCards?: JobCard[];
+  onSelectCard?: (card: JobCard) => void;
+  onTransitionWorkflowStage?: (card: JobCard, targetStage: JobCardWorkflowStage, reason?: string) => Promise<void>;
+  onSpawnLinkedJob?: (
+    parentCard: JobCard,
+    params: {
+      department: string;
+      departmentCategory: string;
+      tradeRequired: TechnicalTrade;
+      assignedTo: string;
+      description: string;
+      priority: Priority;
+      shiftAssigned?: ShiftGroup;
+      targetDate?: string;
+      assignImmediately?: boolean;
+    }
+  ) => Promise<{ childId: string; childJobCardNumber: string }>;
+  onAddAttachment?: (card: JobCard, attachment: JobCardAttachment) => Promise<void>;
+  onRemoveAttachment?: (card: JobCard, attachmentId: string) => Promise<void>;
 }
-
-const STAGES: JobCardStatus[] = ['Draft', 'In Progress', 'Pending Spares', 'Completed'];
 
 export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
   card,
@@ -94,9 +147,16 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
   onAddSparePart,
   onIssueSparePart,
   onRecordHandback,
-  onHODCloseOut
+  onHODCloseOut,
+  allJobCards = [],
+  onSelectCard,
+  onTransitionWorkflowStage,
+  onSpawnLinkedJob,
+  onAddAttachment,
+  onRemoveAttachment
 }) => {
   const { userProfile } = useAuth();
+  const { departmentsByCategory, activeTrades, activeShifts } = useOrgMasterData();
   const [activeTab, setActiveTab] = useState<'details' | 'spares' | 'handback' | 'labor' | 'handovers' | 'chatter'>('details');
 
   // Accept & Assign state
@@ -153,21 +213,56 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
   const [isLoggingHandover, setIsLoggingHandover] = useState(false);
   const [showHandoverForm, setShowHandoverForm] = useState(false);
 
-  // Comment state
+  // Comment & error state
   const [commentText, setCommentText] = useState('');
   const [isSubmittingComment, setIsSubmittingComment] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+
+  // 8-Stage workflow transition prompt state
+  const [pendingStagePrompt, setPendingStagePrompt] = useState<JobCardWorkflowStage | null>(null);
+  const [stageReasonText, setStageReasonText] = useState('');
+  const [isTransitioningStage, setIsTransitioningStage] = useState(false);
+
+  // Linked multi-department job spawning state
+  const [showSpawnLinkedForm, setShowSpawnLinkedForm] = useState(false);
+  const [spawnDeptCategory, setSpawnDeptCategory] = useState('Engineering');
+  const [spawnDepartment, setSpawnDepartment] = useState('Engineering - Electrical & Instrumentation');
+  const [spawnTrade, setSpawnTrade] = useState<TechnicalTrade>('Electrician');
+  const [spawnAssignedTo, setSpawnAssignedTo] = useState('Msebenzi Gamedze — Plant Electrician (Standby)');
+  const [spawnPriority, setSpawnPriority] = useState<Priority>('High');
+  const [spawnShift, setSpawnShift] = useState<ShiftGroup>('Shift A');
+  const [spawnDescription, setSpawnDescription] = useState('');
+  const [isSpawningLinked, setIsSpawningLinked] = useState(false);
+  const [spawnSuccessMsg, setSpawnSuccessMsg] = useState<string | null>(null);
+
+  // Attachment & confirm state
+  const [attachmentCategory, setAttachmentCategory] = useState<JobCardAttachmentCategory>('FAULT_PHOTO');
+  const [attachmentCaption, setAttachmentCaption] = useState('');
+  const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
+  const [previewAttachment, setPreviewAttachment] = useState<JobCardAttachment | null>(null);
+  const [confirmDeleteCard, setConfirmDeleteCard] = useState(false);
 
   // Sync default technician when user switches active logged-in profile or card changes
   useEffect(() => {
+    setDetailError(null);
+    setPendingStagePrompt(null);
+    setStageReasonText('');
+    setShowSpawnLinkedForm(false);
+    setSpawnSuccessMsg(null);
+    setPreviewAttachment(null);
+    setConfirmDeleteCard(false);
+    setAttachmentCaption('');
     if (userProfile?.displayName) {
       setLaborTech(userProfile.title ? `${userProfile.displayName} (${userProfile.title})` : userProfile.displayName);
       setHandoverFromPerson(userProfile.displayName);
     }
     if (card) {
+      setSpawnPriority(card.priority);
       if (card.tradeRequired) setLaborTrade(card.tradeRequired);
       if (card.shiftAssigned) {
         setLaborShift(card.shiftAssigned);
         setFromShift(card.shiftAssigned);
+        setSpawnShift(card.shiftAssigned);
         // Suggest next continuous shift
         if (card.shiftAssigned === 'Shift A') setToShift('Shift B');
         else if (card.shiftAssigned === 'Shift B') setToShift('Shift C');
@@ -179,14 +274,121 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
 
   if (!isOpen || !card) return null;
 
+  const actor = {
+    uid: userProfile?.uid,
+    role: userProfile?.role,
+    email: userProfile?.email
+  };
+  const currentWorkflowStage = resolveWorkflowStage(card);
+  const currentWorkflowMeta = getWorkflowStageMeta(currentWorkflowStage);
+  const linkedFamily = getLinkedJobCardFamily(card, allJobCards);
+
+  const isTerminal = isJobCardTerminal(card);
+  const isAdminActor = isJobCardAdmin(actor.role, actor.email);
+  const isReadOnlyLocked = isTerminal && !isAdminActor;
+  const canEdit = canEditJobCard(actor, card);
+  const canAssign = canAssignOrAcceptJobCard(actor.role, actor.email) && !isReadOnlyLocked;
+  const canSpawnLinked = canSpawnLinkedJobCard(actor.role, actor.email) && !isReadOnlyLocked && Boolean(onSpawnLinkedJob);
+  const canReqSpares = canRequestSpares(actor.role, actor.email) && !isReadOnlyLocked;
+  const canIssSpares = canIssueSpares(actor.role, actor.email) && !isReadOnlyLocked;
+  const canHandback = canRecordArtisanHandback(actor.role, actor.email) && !isReadOnlyLocked;
+  const canHODSign = canHODSignOffJobCard(actor.role, actor.email) && !isReadOnlyLocked;
+  const canLogLabor = canLogLaborOrHandover(actor.role, actor.email) && !isReadOnlyLocked;
+  const canDelete = canDeleteJobCard(actor.role, actor.email);
+
   const currentAuthorName = userProfile?.displayName || userProfile?.email || 'Authorized Staff';
+
+  const handleStatusChangeSafe = async (targetStatus: JobCardStatus) => {
+    if (!canTransitionJobCardStatus(actor, card, targetStatus)) {
+      setDetailError(getJobCardPermissionReason('complete', actor.role));
+      return;
+    }
+    setDetailError(null);
+    try {
+      await onUpdateStatus(card, targetStatus);
+    } catch (err: any) {
+      setDetailError(err?.message || 'Failed to update Job Card status.');
+    }
+  };
+
+  const executeWorkflowStageTransition = async (targetStage: JobCardWorkflowStage, reason?: string) => {
+    if (!onTransitionWorkflowStage) return;
+    if (!canTransitionWorkflowStage(actor, card, targetStage)) {
+      setDetailError(
+        targetStage === 'CLOSED'
+          ? getJobCardPermissionReason('hod_signoff', actor.role)
+          : getJobCardPermissionReason('complete', actor.role)
+      );
+      return;
+    }
+    setDetailError(null);
+    setIsTransitioningStage(true);
+    try {
+      await onTransitionWorkflowStage(card, targetStage, reason?.trim() || undefined);
+      setPendingStagePrompt(null);
+      setStageReasonText('');
+    } catch (err: any) {
+      setDetailError(err?.message || 'Failed to transition workflow stage.');
+    } finally {
+      setIsTransitioningStage(false);
+    }
+  };
+
+  const handlePipelineStageClick = (targetStage: JobCardWorkflowStage) => {
+    if (
+      targetStage === 'WAITING_FOR_SHUTDOWN' ||
+      targetStage === 'WAITING_FOR_PARTS' ||
+      targetStage === 'CANCELLED'
+    ) {
+      setPendingStagePrompt(targetStage);
+      setStageReasonText('');
+      return;
+    }
+    executeWorkflowStageTransition(targetStage);
+  };
+
+  const handleSpawnLinkedSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!onSpawnLinkedJob || !spawnDescription.trim()) return;
+    if (!canSpawnLinked) {
+      setDetailError(getJobCardPermissionReason('assign', actor.role));
+      return;
+    }
+    setDetailError(null);
+    setIsSpawningLinked(true);
+    try {
+      const result = await onSpawnLinkedJob(card, {
+        department: spawnDepartment,
+        departmentCategory: spawnDeptCategory,
+        tradeRequired: spawnTrade,
+        assignedTo: spawnAssignedTo,
+        description: spawnDescription.trim(),
+        priority: spawnPriority,
+        shiftAssigned: spawnShift,
+        targetDate: card.targetDate,
+        assignImmediately: true
+      });
+      setSpawnSuccessMsg(`Created companion job card ${result.childJobCardNumber} linked to ${card.jobCardNumber}.`);
+      setSpawnDescription('');
+      setShowSpawnLinkedForm(false);
+    } catch (err: any) {
+      setDetailError(err?.message || 'Failed to spawn companion department job.');
+    } finally {
+      setIsSpawningLinked(false);
+    }
+  };
 
   const handleLaborSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canLogLabor) {
+      setDetailError(getJobCardPermissionReason('labor', actor.role));
+      return;
+    }
     const hoursNum = parseFloat(laborHours);
     if (isNaN(hoursNum) || hoursNum <= 0) return;
     if (!laborNotes.trim()) return;
 
+    setDetailError(null);
     setIsLoggingLabor(true);
     try {
       await onAddLabor(card, laborTech, laborDate, hoursNum, laborNotes.trim(), {
@@ -196,6 +398,8 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
       });
       setLaborNotes('');
       setLaborHours('1.0');
+    } catch (err: any) {
+      setDetailError(err?.message || 'Failed to record labor hours.');
     } finally {
       setIsLoggingLabor(false);
     }
@@ -204,8 +408,13 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
   const handleHandoverSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!onAddHandover) return;
+    if (!canLogLabor) {
+      setDetailError(getJobCardPermissionReason('labor', actor.role));
+      return;
+    }
     if (!tasksCompleted.trim() || !pendingTasks.trim() || !handoverToPerson.trim()) return;
 
+    setDetailError(null);
     setIsLoggingHandover(true);
     try {
       await onAddHandover(card, {
@@ -221,6 +430,8 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
       setPendingTasks('');
       setHazardsOrIsolations('');
       setShowHandoverForm(false);
+    } catch (err: any) {
+      setDetailError(err?.message || 'Failed to submit shift handover.');
     } finally {
       setIsLoggingHandover(false);
     }
@@ -228,12 +439,15 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
 
   const handleCommentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!commentText.trim()) return;
+    if (!commentText.trim() || isReadOnlyLocked) return;
 
+    setDetailError(null);
     setIsSubmittingComment(true);
     try {
       await onAddComment(card, currentAuthorName, commentText.trim());
       setCommentText('');
+    } catch (err: any) {
+      setDetailError(err?.message || 'Failed to add comment.');
     } finally {
       setIsSubmittingComment(false);
     }
@@ -242,6 +456,11 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
   const handleAcceptSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!onAcceptRequisition) return;
+    if (!canAssign) {
+      setDetailError(getJobCardPermissionReason('assign', actor.role));
+      return;
+    }
+    setDetailError(null);
     setIsAccepting(true);
     try {
       await onAcceptRequisition(card, {
@@ -253,6 +472,8 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
         notes: assignNotes
       });
       setShowAcceptForm(false);
+    } catch (err: any) {
+      setDetailError(err?.message || 'Failed to accept & assign requisition.');
     } finally {
       setIsAccepting(false);
     }
@@ -261,6 +482,11 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
   const handleAddSpareSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!onAddSparePart || !partDescription.trim()) return;
+    if (!canReqSpares) {
+      setDetailError(getJobCardPermissionReason('request_spares', actor.role));
+      return;
+    }
+    setDetailError(null);
     setIsAddingSpare(true);
     try {
       await onAddSparePart(card, {
@@ -275,6 +501,8 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
       setPartNumber('');
       setStoreVoucherNumber('');
       setMarkPendingSpares(false);
+    } catch (err: any) {
+      setDetailError(err?.message || 'Failed to submit spares requisition.');
     } finally {
       setIsAddingSpare(false);
     }
@@ -282,6 +510,11 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
 
   const handleIssueSpareSubmit = async (partId: string) => {
     if (!onIssueSparePart) return;
+    if (!canIssSpares) {
+      setDetailError(getJobCardPermissionReason('issue_spares', actor.role));
+      return;
+    }
+    setDetailError(null);
     try {
       await onIssueSparePart(card, partId, {
         issuedBy: userProfile?.displayName || 'Elliot Mhlongo (Stores Manager)',
@@ -289,14 +522,19 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
       });
       setIssuingPartId(null);
       setIssueVoucher('');
-    } catch (e) {
-      console.error(e);
+    } catch (err: any) {
+      setDetailError(err?.message || 'Failed to issue spares from warehouse.');
     }
   };
 
   const handleHandbackSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!onRecordHandback) return;
+    if (!canHandback) {
+      setDetailError(getJobCardPermissionReason('handback', actor.role));
+      return;
+    }
+    setDetailError(null);
     setIsLoggingHandbackReceipt(true);
     try {
       await onRecordHandback(card, {
@@ -307,6 +545,8 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
         hours: Number(handbackHours) || 1,
         handbackNotes: handbackNotes.trim()
       });
+    } catch (err: any) {
+      setDetailError(err?.message || 'Failed to record slip handback.');
     } finally {
       setIsLoggingHandbackReceipt(false);
     }
@@ -315,12 +555,19 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
   const handleHODSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!onHODCloseOut) return;
+    if (!canHODSign) {
+      setDetailError(getJobCardPermissionReason('hod_signoff', actor.role));
+      return;
+    }
+    setDetailError(null);
     setIsClosingHOD(true);
     try {
       await onHODCloseOut(card, {
         hodName: hodName || 'Antonio Miranda (Engineering Manager)',
         notes: hodNotes
       });
+    } catch (err: any) {
+      setDetailError(err?.message || 'Failed to apply HOD sign-off.');
     } finally {
       setIsClosingHOD(false);
     }
@@ -351,13 +598,15 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
         <div className="bg-slate-100 px-5 py-3 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
           {/* Action Buttons Left */}
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              onClick={() => onEdit(card)}
-              className="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-800 text-white text-xs font-semibold shadow-xs flex items-center gap-1.5 cursor-pointer transition"
-            >
-              <Edit className="w-3.5 h-3.5" />
-              <span>Edit</span>
-            </button>
+            {canEdit && (
+              <button
+                onClick={() => onEdit(card)}
+                className="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-800 text-white text-xs font-semibold shadow-xs flex items-center gap-1.5 cursor-pointer transition"
+              >
+                <Edit className="w-3.5 h-3.5" />
+                <span>Edit</span>
+              </button>
+            )}
 
             <button
               onClick={() => onPrint(card)}
@@ -368,7 +617,7 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
             </button>
 
             {/* SUPERVISOR WORKFLOW ACTION: Accept & Assign */}
-            {(!card.acceptedBy || card.requisitionStage === 'Pending Acceptance' || card.status === 'Draft') && (
+            {canAssign && (!card.acceptedBy || card.requisitionStage === 'Pending Acceptance' || card.status === 'Draft') && (
               <button
                 onClick={() => setShowAcceptForm(!showAcceptForm)}
                 className="px-3.5 py-1.5 rounded bg-[#1b4332] hover:bg-[#143326] text-white text-xs font-bold shadow-xs flex items-center gap-1.5 cursor-pointer transition animate-pulse"
@@ -384,11 +633,11 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
               className="px-3 py-1.5 rounded border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition"
             >
               <Package className="w-3.5 h-3.5 text-amber-700" />
-              <span>Request Spares ({card.sparesRequested?.length || 0})</span>
+              <span>Spares ({card.sparesRequested?.length || 0})</span>
             </button>
 
             {/* SUPERVISOR WORKFLOW ACTION: Record Artisan Slip Handback */}
-            {card.status === 'In Progress' && (
+            {canHandback && card.status === 'In Progress' && (
               <button
                 onClick={() => setActiveTab('handback')}
                 className="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs flex items-center gap-1.5 cursor-pointer transition"
@@ -398,8 +647,8 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
               </button>
             )}
 
-            {/* SUPERVISOR WORKFLOW ACTION: HOD Close-Out */}
-            {(card.requisitionStage === 'Artisan Completed' || (card.status === 'In Progress' && card.totalLaborHours > 0)) && !card.hodSignedBy && (
+            {/* MANAGER / HOD WORKFLOW ACTION: HOD Close-Out */}
+            {canHODSign && (card.requisitionStage === 'Artisan Completed' || (card.status === 'In Progress' && card.totalLaborHours > 0)) && !card.hodSignedBy && (
               <button
                 onClick={() => setActiveTab('handback')}
                 className="px-3.5 py-1.5 rounded bg-purple-700 hover:bg-purple-800 text-white text-xs font-bold shadow-xs flex items-center gap-1.5 cursor-pointer transition"
@@ -409,10 +658,10 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
               </button>
             )}
 
-            {/* Stage Quick Actions */}
-            {card.status === 'Draft' && (
+            {/* Stage Quick Actions (Role-Gated) */}
+            {card.status === 'Draft' && canTransitionJobCardStatus(actor, card, 'In Progress') && (
               <button
-                onClick={() => onUpdateStatus(card, 'In Progress')}
+                onClick={() => handleStatusChangeSafe('In Progress')}
                 className="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium cursor-pointer transition"
               >
                 Start Work
@@ -421,34 +670,38 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
 
             {card.status === 'In Progress' && (
               <>
-                <button
-                  onClick={() => onUpdateStatus(card, 'Pending Spares')}
-                  className="px-3 py-1.5 rounded bg-amber-600 hover:bg-amber-700 text-white text-xs font-medium cursor-pointer transition"
-                >
-                  Hold for Spares
-                </button>
-                <button
-                  onClick={() => onUpdateStatus(card, 'Completed')}
-                  className="px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium cursor-pointer transition flex items-center gap-1"
-                >
-                  <Check className="w-3.5 h-3.5" />
-                  <span>Mark Completed</span>
-                </button>
+                {canTransitionJobCardStatus(actor, card, 'Pending Spares') && (
+                  <button
+                    onClick={() => handleStatusChangeSafe('Pending Spares')}
+                    className="px-3 py-1.5 rounded bg-amber-600 hover:bg-amber-700 text-white text-xs font-medium cursor-pointer transition"
+                  >
+                    Hold for Spares
+                  </button>
+                )}
+                {canTransitionJobCardStatus(actor, card, 'Completed') && (
+                  <button
+                    onClick={() => handleStatusChangeSafe('Completed')}
+                    className="px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium cursor-pointer transition flex items-center gap-1"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Mark Completed</span>
+                  </button>
+                )}
               </>
             )}
 
-            {card.status === 'Pending Spares' && (
+            {card.status === 'Pending Spares' && canTransitionJobCardStatus(actor, card, 'In Progress') && (
               <button
-                onClick={() => onUpdateStatus(card, 'In Progress')}
+                onClick={() => handleStatusChangeSafe('In Progress')}
                 className="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium cursor-pointer transition"
               >
                 Spares Received (Resume)
               </button>
             )}
 
-            {card.status !== 'Cancelled' && card.status !== 'Completed' && (
+            {card.status !== 'Cancelled' && card.status !== 'Completed' && canTransitionJobCardStatus(actor, card, 'Cancelled') && (
               <button
-                onClick={() => onUpdateStatus(card, 'Cancelled')}
+                onClick={() => handleStatusChangeSafe('Cancelled')}
                 className="px-2.5 py-1.5 rounded hover:bg-rose-50 text-rose-700 border border-transparent hover:border-rose-200 text-xs cursor-pointer transition"
               >
                 Cancel JC
@@ -456,30 +709,11 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
             )}
           </div>
 
-          {/* Odoo Chevron Status Stage Bar */}
+          {/* Odoo Chevron Status Stage Bar (Legacy Quick Switch + Close) */}
           <div className="flex items-center space-x-1 text-xs">
-            {STAGES.map((stage) => {
-              const isCurrent = card.status === stage;
-              return (
-                <button
-                  key={stage}
-                  onClick={() => onUpdateStatus(card, stage)}
-                  className={`px-3 py-1 rounded text-xs font-medium transition cursor-pointer flex items-center gap-1 ${
-                    isCurrent
-                      ? 'bg-[#714B67] text-white font-bold shadow-xs'
-                      : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
-                  }`}
-                >
-                  <span>{stage}</span>
-                </button>
-              );
-            })}
-
-            {card.status === 'Cancelled' && (
-              <span className="px-3 py-1 rounded bg-rose-600 text-white font-bold text-xs">
-                Cancelled
-              </span>
-            )}
+            <span className={`px-2.5 py-1 rounded text-xs font-bold border ${currentWorkflowMeta.badgeClass}`}>
+              {currentWorkflowMeta.label}
+            </span>
 
             <button
               onClick={onClose}
@@ -490,8 +724,216 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
           </div>
         </div>
 
+        {/* 8-Stage Phase 1 Works Requisition Pipeline Bar */}
+        {onTransitionWorkflowStage && (
+          <div className="bg-white px-5 py-2.5 border-b border-slate-200 shrink-0 space-y-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {ACTIVE_PIPELINE_STAGES.map((stageItem) => {
+                const isCurrent = currentWorkflowStage === stageItem.id;
+                const canClick = !isCurrent && canTransitionWorkflowStage(actor, card, stageItem.id);
+                return (
+                  <button
+                    key={stageItem.id}
+                    type="button"
+                    disabled={(!canClick && !isCurrent) || isTransitioningStage}
+                    title={
+                      isCurrent
+                        ? stageItem.description
+                        : canClick
+                        ? `Transition to ${stageItem.label}: ${stageItem.description}`
+                        : `Locked for role ${actor.role || 'Staff'}`
+                    }
+                    onClick={() => {
+                      if (canClick) handlePipelineStageClick(stageItem.id);
+                    }}
+                    className={`px-2.5 py-1 rounded text-[11px] font-semibold transition flex items-center gap-1 ${
+                      isCurrent
+                        ? 'bg-[#714B67] text-white shadow-2xs ring-1 ring-[#714B67]'
+                        : canClick
+                        ? 'bg-slate-50 border border-slate-200 text-slate-700 hover:bg-purple-50 hover:border-purple-300 hover:text-[#714B67] cursor-pointer'
+                        : 'bg-slate-50 border border-slate-100 text-slate-400 cursor-not-allowed'
+                    }`}
+                  >
+                    <span>{stageItem.label}</span>
+                  </button>
+                );
+              })}
+
+              {currentWorkflowStage === 'CANCELLED' ? (
+                <span className="px-2.5 py-1 rounded bg-rose-600 text-white text-[11px] font-bold">
+                  8. Cancelled
+                </span>
+              ) : (
+                canTransitionWorkflowStage(actor, card, 'CANCELLED') && (
+                  <button
+                    type="button"
+                    disabled={isTransitioningStage}
+                    onClick={() => handlePipelineStageClick('CANCELLED')}
+                    className="ml-auto px-2.5 py-1 rounded border border-rose-200 text-rose-700 hover:bg-rose-50 text-[11px] font-semibold cursor-pointer"
+                  >
+                    Cancel Job
+                  </button>
+                )
+              )}
+            </div>
+
+            {/* Hold / Deferral / Cancellation Reason Prompt */}
+            {pendingStagePrompt && (
+              <div className="p-2.5 rounded bg-amber-50 border border-amber-300 flex flex-wrap items-center gap-2 text-xs">
+                <PauseCircle className="w-4 h-4 text-amber-700 shrink-0" />
+                <span className="font-bold text-amber-950">
+                  {getWorkflowStageMeta(pendingStagePrompt).label}:
+                </span>
+                <input
+                  type="text"
+                  value={stageReasonText}
+                  onChange={(e) => setStageReasonText(e.target.value)}
+                  placeholder={
+                    pendingStagePrompt === 'WAITING_FOR_SHUTDOWN'
+                      ? 'Specify planned shutdown window / isolation needed...'
+                      : pendingStagePrompt === 'WAITING_FOR_PARTS'
+                      ? 'Specify pending part or purchase requisition ref...'
+                      : 'Specify reason for cancelling this Work Order...'
+                  }
+                  className="flex-1 min-w-[220px] px-2.5 py-1 border border-amber-300 rounded bg-white text-xs"
+                />
+                <button
+                  type="button"
+                  disabled={isTransitioningStage}
+                  onClick={() => executeWorkflowStageTransition(pendingStagePrompt, stageReasonText)}
+                  className="px-3 py-1 rounded bg-amber-700 hover:bg-amber-800 text-white font-bold text-xs cursor-pointer disabled:opacity-50"
+                >
+                  {isTransitioningStage ? 'Updating...' : 'Confirm Stage'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPendingStagePrompt(null)}
+                  className="px-2 py-1 rounded text-slate-600 hover:bg-amber-100 text-xs cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+
+            {card.holdReason && (currentWorkflowStage === 'WAITING_FOR_PARTS' || currentWorkflowStage === 'WAITING_FOR_SHUTDOWN') && (
+              <div className="text-[11px] text-amber-900 bg-amber-50/70 border border-amber-200 rounded px-2.5 py-1 flex items-center gap-1.5">
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                <span><strong>Hold / Deferral Reason:</strong> {card.holdReason}</span>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Modal Scrollable Body */}
         <div className="p-6 overflow-y-auto flex-1 space-y-4 bg-[#f8f9fa]">
+          {detailError && (
+            <div className="p-3 rounded bg-rose-50 border border-rose-300 text-rose-800 text-xs flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0" />
+                <span className="font-semibold">{detailError}</span>
+              </div>
+              <button
+                onClick={() => setDetailError(null)}
+                className="text-rose-600 hover:text-rose-900 font-bold text-xs cursor-pointer"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {isReadOnlyLocked && (
+            <div className="p-2.5 rounded bg-slate-100 border border-slate-300 text-slate-700 text-xs flex items-center gap-2">
+              <Lock className="w-3.5 h-3.5 text-slate-600 shrink-0" />
+              <span>
+                <strong>Terminal Lock:</strong> This Work Order is <strong>{card.status}</strong> and locked for audit integrity. Only an Admin may reopen or modify closed records.
+              </span>
+            </div>
+          )}
+
+          {showAcceptForm && canAssign && (
+            <form onSubmit={handleAcceptSubmit} className="bg-emerald-50 border border-emerald-300 rounded-lg p-4 space-y-3 text-xs">
+              <div className="flex items-center justify-between border-b border-emerald-200 pb-2">
+                <span className="font-bold text-emerald-950 flex items-center gap-1.5">
+                  <Check className="w-4 h-4 text-emerald-700" />
+                  Accept Works Requisition &amp; Dispatch Artisan
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowAcceptForm(false)}
+                  className="text-emerald-800 hover:text-emerald-950 font-semibold cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">Accepting Supervisor</label>
+                  <input
+                    type="text"
+                    required
+                    value={acceptingSupervisor}
+                    onChange={(e) => setAcceptingSupervisor(e.target.value)}
+                    className="w-full px-2.5 py-1.5 border border-emerald-300 rounded bg-white text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">Assigned Artisan</label>
+                  <input
+                    type="text"
+                    required
+                    list="accept-artisan-list"
+                    value={selectedArtisan}
+                    onChange={(e) => setSelectedArtisan(e.target.value)}
+                    className="w-full px-2.5 py-1.5 border border-emerald-300 rounded bg-white text-xs"
+                  />
+                  <datalist id="accept-artisan-list">
+                    {getStaffByTrade(assignTrade).map((s) => (
+                      <option key={s.id} value={`${s.name} (${s.title})`} />
+                    ))}
+                  </datalist>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">Trade &amp; Shift</label>
+                  <div className="flex gap-1.5">
+                    <select
+                      value={assignTrade}
+                      onChange={(e) => setAssignTrade(e.target.value as TechnicalTrade)}
+                      className="w-1/2 px-2 py-1.5 border border-emerald-300 rounded bg-white text-xs"
+                    >
+                      {activeTrades.map((t) => (
+                        <option key={t.id} value={t.id}>{t.id}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={assignShift}
+                      onChange={(e) => setAssignShift(e.target.value as ShiftGroup)}
+                      className="w-1/2 px-2 py-1.5 border border-emerald-300 rounded bg-white text-xs"
+                    >
+                      {activeShifts.map((s) => (
+                        <option key={s.id} value={s.id}>{s.id}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <input
+                  type="text"
+                  value={assignNotes}
+                  onChange={(e) => setAssignNotes(e.target.value)}
+                  placeholder="Optional supervisor instructions..."
+                  className="flex-1 min-w-[200px] px-2.5 py-1.5 border border-emerald-300 rounded bg-white text-xs"
+                />
+                <button
+                  type="submit"
+                  disabled={isAccepting}
+                  className="px-4 py-1.5 bg-[#1b4332] hover:bg-[#143326] text-white rounded font-bold text-xs cursor-pointer disabled:opacity-50"
+                >
+                  {isAccepting ? 'Assigning...' : 'Confirm Assignment & Start'}
+                </button>
+              </div>
+            </form>
+          )}
           {/* Card Top Title Block */}
           <div className="bg-white p-5 rounded border border-slate-200 shadow-2xs space-y-3">
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -715,6 +1157,18 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
           {/* TAB 1: Work Order Details */}
           {activeTab === 'details' && (
             <div className="bg-white p-5 rounded-b border border-slate-200 shadow-2xs space-y-4">
+              {linkedFamily.openChildCount > 0 && (
+                <div className="p-3 bg-amber-50 border border-amber-300 rounded text-amber-900 text-xs flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-bold">Open Companion Department Work Orders ({linkedFamily.openChildCount}): </span>
+                    <span>
+                      Verify companion electrical/mechanical/welding sub-jobs below before signing off final plant closure.
+                    </span>
+                  </div>
+                </div>
+              )}
+
               <div>
                 <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
                   Fault Diagnosis & Work Instructions
@@ -735,6 +1189,449 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                   </div>
                 </div>
               )}
+
+              {/* Multi-Department Linked Work Orders (Parent / Companion Child Split) */}
+              <div className="p-4 rounded-lg border border-slate-200 bg-slate-50/70 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
+                  <div className="flex items-center gap-2">
+                    <GitBranch className="w-4 h-4 text-[#714B67]" />
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                        Linked Multi-Department Work Orders
+                      </h4>
+                      <p className="text-[11px] text-slate-500">
+                        Coordinate parallel Mechanical, Electrical, Rigging, or Welding work without duplicating the asset breakdown record.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {(linkedFamily.childCards.length > 0 || linkedFamily.parentCard) && (
+                      <span className="px-2 py-0.5 rounded bg-purple-50 border border-purple-200 text-[#714B67] font-mono text-[11px] font-bold">
+                        Family Labor: {linkedFamily.familyTotalHours.toFixed(1)}h
+                      </span>
+                    )}
+                    {canSpawnLinked && (
+                      <button
+                        type="button"
+                        onClick={() => setShowSpawnLinkedForm(!showSpawnLinkedForm)}
+                        className="px-3 py-1 rounded bg-[#714B67] hover:bg-[#5b3c53] text-white text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                      >
+                        <PlusCircle className="w-3.5 h-3.5" />
+                        <span>{showSpawnLinkedForm ? 'Close Companion Form' : 'Spawn Linked Dept Job'}</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {spawnSuccessMsg && (
+                  <div className="p-2.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold">
+                    ✓ {spawnSuccessMsg}
+                  </div>
+                )}
+
+                {linkedFamily.parentCard && (
+                  <div className="p-2.5 rounded bg-teal-50 border border-teal-200 flex items-center justify-between gap-2 text-xs">
+                    <div>
+                      <span className="text-[10px] font-bold uppercase text-teal-700 block">Parent Breakdown Job Card</span>
+                      <span className="font-mono font-bold text-teal-950">{linkedFamily.parentCard.jobCardNumber}</span>
+                      <span className="text-teal-800 ml-2">{linkedFamily.parentCard.department}</span>
+                    </div>
+                    {onSelectCard && (
+                      <button
+                        type="button"
+                        onClick={() => onSelectCard(linkedFamily.parentCard!)}
+                        className="px-2.5 py-1 rounded bg-white border border-teal-300 text-teal-800 hover:bg-teal-100 font-semibold text-xs cursor-pointer"
+                      >
+                        Open Parent
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {showSpawnLinkedForm && canSpawnLinked && (
+                  <form onSubmit={handleSpawnLinkedSubmit} className="p-3.5 rounded bg-white border border-purple-200 space-y-3 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-bold text-[#714B67]">Create Companion Department Job Card</span>
+                      <div className="flex flex-wrap gap-1">
+                        {[
+                          { label: 'Electrical Isolation', cat: 'Engineering', dept: 'Engineering - Electrical & Instrumentation', trade: 'Electrician' as TechnicalTrade, staff: 'Msebenzi Gamedze — Plant Electrician' },
+                          { label: 'Welding / Boilermaker', cat: 'Engineering', dept: 'Engineering - Mechanical Maintenance', trade: 'Welder' as TechnicalTrade, staff: 'Makhosi Mbhamali — Coded Welder' },
+                          { label: 'Rigging Support', cat: 'Engineering', dept: 'Engineering - Mechanical Maintenance', trade: 'Rigger' as TechnicalTrade, staff: 'Mandla Dlamini — Plant Rigger' }
+                        ].map((preset) => (
+                          <button
+                            key={preset.label}
+                            type="button"
+                            onClick={() => {
+                              setSpawnDeptCategory(preset.cat);
+                              setSpawnDepartment(preset.dept);
+                              setSpawnTrade(preset.trade);
+                              setSpawnAssignedTo(preset.staff);
+                            }}
+                            className="px-2 py-0.5 rounded bg-purple-50 hover:bg-purple-100 text-[#714B67] border border-purple-200 text-[10px] font-semibold cursor-pointer"
+                          >
+                            + {preset.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">Target Department</label>
+                        <select
+                          value={spawnDepartment}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setSpawnDepartment(val);
+                            setSpawnDeptCategory(val.split(' - ')[0] || 'Engineering');
+                          }}
+                          className="w-full px-2.5 py-1.5 border border-slate-300 rounded bg-white text-xs"
+                        >
+                          {departmentsByCategory.flatMap((group) =>
+                            group.departments.map((d) => {
+                              const full = `${group.category} - ${d}`;
+                              return (
+                                <option key={full} value={full}>
+                                  {full}
+                                </option>
+                              );
+                            })
+                          )}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">Required Trade</label>
+                        <select
+                          value={spawnTrade}
+                          onChange={(e) => setSpawnTrade(e.target.value as TechnicalTrade)}
+                          className="w-full px-2.5 py-1.5 border border-slate-300 rounded bg-white text-xs"
+                        >
+                          {activeTrades.map((t) => (
+                            <option key={t.id} value={t.id}>{t.id}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">Assign Artisan / Lead</label>
+                        <input
+                          type="text"
+                          required
+                          list="spawn-artisan-list"
+                          value={spawnAssignedTo}
+                          onChange={(e) => setSpawnAssignedTo(e.target.value)}
+                          className="w-full px-2.5 py-1.5 border border-slate-300 rounded bg-white text-xs"
+                        />
+                        <datalist id="spawn-artisan-list">
+                          {getStaffByTrade(spawnTrade).map((s) => (
+                            <option key={s.id} value={`${s.name} — ${s.title}`} />
+                          ))}
+                        </datalist>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">Priority</label>
+                        <select
+                          value={spawnPriority}
+                          onChange={(e) => setSpawnPriority(e.target.value as Priority)}
+                          className="w-full px-2.5 py-1.5 border border-slate-300 rounded bg-white text-xs"
+                        >
+                          <option value="Low">Low</option>
+                          <option value="Medium">Medium</option>
+                          <option value="High">High</option>
+                          <option value="Emergency">Emergency</option>
+                        </select>
+                      </div>
+                      <div className="sm:col-span-2">
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">Companion Trade Scope *</label>
+                        <input
+                          type="text"
+                          required
+                          value={spawnDescription}
+                          onChange={(e) => setSpawnDescription(e.target.value)}
+                          placeholder={`e.g. Isolate MCC feeder & perform LOTO / disconnect 400V motor for ${card.equipmentName}`}
+                          className="w-full px-2.5 py-1.5 border border-slate-300 rounded bg-white text-xs"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowSpawnLinkedForm(false)}
+                        className="px-3 py-1.5 rounded border border-slate-300 text-slate-700 hover:bg-slate-50 text-xs cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={isSpawningLinked}
+                        className="px-4 py-1.5 rounded bg-[#714B67] hover:bg-[#5b3c53] text-white font-bold text-xs cursor-pointer disabled:opacity-50"
+                      >
+                        {isSpawningLinked ? 'Creating Linked Job...' : 'Create Companion Job Card'}
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                {linkedFamily.childCards.length === 0 && !linkedFamily.parentCard ? (
+                  <div className="text-[11px] text-slate-500 italic">
+                    No companion department jobs linked to this Work Order yet.
+                  </div>
+                ) : (
+                  linkedFamily.childCards.length > 0 && (
+                    <div className="space-y-2">
+                      {linkedFamily.childCards.map((child) => {
+                        const childStageMeta = getWorkflowStageMeta(resolveWorkflowStage(child));
+                        return (
+                          <div
+                            key={child.id}
+                            className="p-2.5 rounded bg-white border border-slate-200 flex flex-wrap items-center justify-between gap-2 text-xs hover:border-[#714B67] transition"
+                          >
+                            <div className="space-y-0.5 min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className="font-mono font-bold text-slate-900">{child.jobCardNumber}</span>
+                                <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold border ${childStageMeta.badgeClass}`}>
+                                  {childStageMeta.shortLabel}
+                                </span>
+                                {child.tradeRequired && (
+                                  <span className="px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 text-[10px] font-medium">
+                                    {child.tradeRequired}
+                                  </span>
+                                )}
+                                <span className="text-[11px] text-slate-500 font-mono">
+                                  {child.totalLaborHours.toFixed(1)}h
+                                </span>
+                              </div>
+                              <div className="text-[11px] text-slate-600 truncate">
+                                <strong>{child.department}</strong> • {child.assignedTo} — {child.description}
+                              </div>
+                            </div>
+                            {onSelectCard && (
+                              <button
+                                type="button"
+                                onClick={() => onSelectCard(child)}
+                                className="px-2.5 py-1 rounded bg-slate-100 hover:bg-purple-50 hover:text-[#714B67] text-slate-700 font-semibold text-xs cursor-pointer shrink-0"
+                              >
+                                Open
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )
+                )}
+              </div>
+
+              {/* Work Order Photos & Document Attachments (<= 4, <= 220 KB) */}
+              <div className="p-4 rounded-lg border border-slate-200 bg-slate-50/70 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
+                  <div className="flex items-center gap-2">
+                    <Paperclip className="w-4 h-4 text-[#714B67]" />
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                        Photos &amp; Document Attachments ({card.attachments?.length || 0} / {MAX_JOB_CARD_ATTACHMENTS})
+                      </h4>
+                      <p className="text-[11px] text-slate-500">
+                        Attach fault photos, post-repair verification photos, or scanned paper slips (auto-compressed &le; 220 KB).
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {onAddAttachment && canLogLabor && (card.attachments?.length || 0) < MAX_JOB_CARD_ATTACHMENTS && (
+                  <div className="p-3 rounded bg-white border border-slate-200 flex flex-wrap items-end gap-2.5 text-xs">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                        Attachment Type
+                      </label>
+                      <select
+                        value={attachmentCategory}
+                        onChange={(e) => setAttachmentCategory(e.target.value as JobCardAttachmentCategory)}
+                        className="px-2.5 py-1.5 border border-slate-300 rounded bg-white text-xs font-medium"
+                      >
+                        <option value="FAULT_PHOTO">Fault Photo</option>
+                        <option value="REPAIRED_PHOTO">Repaired Photo</option>
+                        <option value="PAPER_SLIP_SCAN">Paper Slip Scan</option>
+                        <option value="DOCUMENT">Technical Document (PDF/TXT)</option>
+                      </select>
+                    </div>
+                    <div className="flex-1 min-w-[180px]">
+                      <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                        Optional Caption / Note
+                      </label>
+                      <input
+                        type="text"
+                        value={attachmentCaption}
+                        onChange={(e) => setAttachmentCaption(e.target.value)}
+                        placeholder="e.g. Damaged shaft sleeve prior to replacement"
+                        className="w-full px-2.5 py-1.5 border border-slate-300 rounded bg-white text-xs"
+                      />
+                    </div>
+                    <label className="px-3.5 py-1.5 rounded bg-[#714B67] hover:bg-[#5b3c53] text-white font-semibold text-xs cursor-pointer flex items-center gap-1.5 shrink-0">
+                      <Camera className="w-3.5 h-3.5" />
+                      <span>{isUploadingAttachment ? 'Processing...' : 'Upload File'}</span>
+                      <input
+                        type="file"
+                        accept="image/*,application/pdf,.txt"
+                        disabled={isUploadingAttachment}
+                        className="hidden"
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          e.target.value = '';
+                          if (!file) return;
+                          setDetailError(null);
+                          setIsUploadingAttachment(true);
+                          try {
+                            let newAttachment: JobCardAttachment;
+                            if (file.type.startsWith('image/')) {
+                              const compressed = await compressInspectionPhotoFile(file);
+                              newAttachment = {
+                                id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                                name: compressed.name,
+                                category: attachmentCategory,
+                                mimeType: compressed.contentType,
+                                sizeBytes: compressed.sizeBytes,
+                                dataUrl: compressed.dataUrl,
+                                uploadedBy: currentAuthorName,
+                                uploadedByUid: actor.uid,
+                                uploadedAt: compressed.capturedAt,
+                                caption: attachmentCaption.trim() || undefined
+                              };
+                            } else {
+                              if (file.size > MAX_JOB_CARD_ATTACHMENT_BYTES) {
+                                throw new Error(
+                                  `Document "${file.name}" exceeds the ${Math.round(MAX_JOB_CARD_ATTACHMENT_BYTES / 1000)} KB Firestore limit.`
+                                );
+                              }
+                              const dataUrl = await new Promise<string>((resolve, reject) => {
+                                const reader = new FileReader();
+                                reader.onload = () =>
+                                  typeof reader.result === 'string'
+                                    ? resolve(reader.result)
+                                    : reject(new Error('Could not read file.'));
+                                reader.onerror = () => reject(new Error('Could not read file.'));
+                                reader.readAsDataURL(file);
+                              });
+                              if (dataUrl.length > MAX_JOB_CARD_ATTACHMENT_BYTES) {
+                                throw new Error('Encoded document exceeds 220 KB limit.');
+                              }
+                              newAttachment = {
+                                id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                                name: file.name.slice(0, 80),
+                                category: attachmentCategory,
+                                mimeType: file.type || 'application/octet-stream',
+                                sizeBytes: file.size,
+                                dataUrl,
+                                uploadedBy: currentAuthorName,
+                                uploadedByUid: actor.uid,
+                                uploadedAt: new Date().toISOString(),
+                                caption: attachmentCaption.trim() || undefined
+                              };
+                            }
+                            await onAddAttachment(card, newAttachment);
+                            setAttachmentCaption('');
+                          } catch (err: any) {
+                            setDetailError(err?.message || 'Failed to upload attachment.');
+                          } finally {
+                            setIsUploadingAttachment(false);
+                          }
+                        }}
+                      />
+                    </label>
+                  </div>
+                )}
+
+                {!card.attachments || card.attachments.length === 0 ? (
+                  <div className="text-[11px] text-slate-500 italic">
+                    No photos or document attachments uploaded for this work order yet.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    {card.attachments.map((att) => {
+                      const isImage = att.mimeType.startsWith('image/');
+                      return (
+                        <div
+                          key={att.id}
+                          className="p-2.5 rounded bg-white border border-slate-200 flex items-center gap-3 text-xs"
+                        >
+                          {isImage ? (
+                            <img
+                              src={att.dataUrl}
+                              alt={att.name}
+                              onClick={() => setPreviewAttachment(att)}
+                              className="w-14 h-14 object-cover rounded border border-slate-200 cursor-pointer shrink-0"
+                            />
+                          ) : (
+                            <div className="w-14 h-14 rounded border border-slate-200 bg-slate-100 flex items-center justify-center shrink-0">
+                              <FileText className="w-6 h-6 text-slate-500" />
+                            </div>
+                          )}
+                          <div className="min-w-0 flex-1 space-y-0.5">
+                            <div className="flex items-center gap-1.5">
+                              <span className="px-1.5 py-0.2 rounded bg-purple-50 border border-purple-200 text-[#714B67] font-bold text-[10px]">
+                                {att.category.replace(/_/g, ' ')}
+                              </span>
+                              <span className="text-[10px] font-mono text-slate-400">
+                                {Math.round(att.sizeBytes / 1024)} KB
+                              </span>
+                            </div>
+                            <div className="font-semibold text-slate-800 truncate">{att.name}</div>
+                            {att.caption && (
+                              <div className="text-[11px] text-slate-600 truncate">{att.caption}</div>
+                            )}
+                            <div className="text-[10px] text-slate-400 font-mono">
+                              {att.uploadedBy} • {new Date(att.uploadedAt).toLocaleDateString()}
+                            </div>
+                          </div>
+                          <div className="flex flex-col gap-1 shrink-0">
+                            {isImage ? (
+                              <button
+                                type="button"
+                                onClick={() => setPreviewAttachment(att)}
+                                className="p-1.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer"
+                                title="Preview image"
+                              >
+                                <Eye className="w-3.5 h-3.5" />
+                              </button>
+                            ) : (
+                              <a
+                                href={att.dataUrl}
+                                download={att.name}
+                                className="p-1.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer"
+                                title="Download file"
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                              </a>
+                            )}
+                            {onRemoveAttachment && canAssign && (
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  setDetailError(null);
+                                  try {
+                                    await onRemoveAttachment(card, att.id);
+                                  } catch (err: any) {
+                                    setDetailError(err?.message || 'Could not remove attachment.');
+                                  }
+                                }}
+                                className="p-1.5 rounded bg-rose-50 hover:bg-rose-100 text-rose-700 cursor-pointer"
+                                title="Remove attachment"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
                 <div className="p-3 bg-slate-50 rounded border border-slate-100 text-xs">
@@ -768,78 +1665,85 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                 </div>
               </div>
 
-              {/* Add Spares Requisition Form */}
-              <form onSubmit={handleAddSpareSubmit} className="p-3.5 bg-amber-50/50 border border-amber-200 rounded-lg space-y-3">
-                <div className="font-bold text-xs text-amber-950 flex items-center gap-1.5">
-                  <PlusCircle className="w-3.5 h-3.5 text-amber-700" />
-                  <span>Request Spare Part from Stores</span>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5 text-xs">
-                  <div className="sm:col-span-2">
-                    <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
-                      Part Description *
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={partDescription}
-                      onChange={(e) => setPartDescription(e.target.value)}
-                      placeholder="e.g. Mechanical Seal 45mm Tungsten Carbide / Bearings 6308"
-                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white"
-                    />
+              {/* Add Spares Requisition Form (Role-Gated) */}
+              {canReqSpares ? (
+                <form onSubmit={handleAddSpareSubmit} className="p-3.5 bg-amber-50/50 border border-amber-200 rounded-lg space-y-3">
+                  <div className="font-bold text-xs text-amber-950 flex items-center gap-1.5">
+                    <PlusCircle className="w-3.5 h-3.5 text-amber-700" />
+                    <span>Request Spare Part from Stores</span>
                   </div>
 
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
-                      Quantity Required *
-                    </label>
-                    <input
-                      type="number"
-                      min="1"
-                      required
-                      value={partQty}
-                      onChange={(e) => setPartQty(e.target.value)}
-                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white"
-                    />
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5 text-xs">
+                    <div className="sm:col-span-2">
+                      <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                        Part Description *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={partDescription}
+                        onChange={(e) => setPartDescription(e.target.value)}
+                        placeholder="e.g. Mechanical Seal 45mm Tungsten Carbide / Bearings 6308"
+                        className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                        Quantity Required *
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        required
+                        value={partQty}
+                        onChange={(e) => setPartQty(e.target.value)}
+                        className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                        Part # / Bin Location
+                      </label>
+                      <input
+                        type="text"
+                        value={partNumber}
+                        onChange={(e) => setPartNumber(e.target.value)}
+                        placeholder="e.g. PN-SEAL-45 / Bin B3"
+                        className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white font-mono"
+                      />
+                    </div>
                   </div>
 
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
-                      Part # / Bin Location
+                  <div className="flex items-center justify-between pt-1">
+                    <label className="flex items-center space-x-1.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={markPendingSpares}
+                        onChange={(e) => setMarkPendingSpares(e.target.checked)}
+                        className="text-amber-600 focus:ring-amber-500 rounded"
+                      />
+                      <span className="text-xs font-semibold text-amber-900">
+                        Hold Work Order as &quot;Pending Spares&quot; (Waiting for Stores / Procurement)
+                      </span>
                     </label>
-                    <input
-                      type="text"
-                      value={partNumber}
-                      onChange={(e) => setPartNumber(e.target.value)}
-                      placeholder="e.g. PN-SEAL-45 / Bin B3"
-                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white font-mono"
-                    />
+
+                    <button
+                      type="submit"
+                      disabled={isAddingSpare}
+                      className="px-4 py-1.5 bg-amber-700 hover:bg-amber-800 text-white font-bold text-xs rounded transition shadow-xs cursor-pointer"
+                    >
+                      {isAddingSpare ? 'Requesting...' : 'Submit Spares Requisition'}
+                    </button>
                   </div>
+                </form>
+              ) : (
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded text-[11px] text-slate-600 flex items-center gap-2">
+                  <Lock className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                  <span>{getJobCardPermissionReason('request_spares', actor.role)}</span>
                 </div>
-
-                <div className="flex items-center justify-between pt-1">
-                  <label className="flex items-center space-x-1.5 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={markPendingSpares}
-                      onChange={(e) => setMarkPendingSpares(e.target.checked)}
-                      className="text-amber-600 focus:ring-amber-500 rounded"
-                    />
-                    <span className="text-xs font-semibold text-amber-900">
-                      Hold Work Order as &quot;Pending Spares&quot; (Waiting for Stores / Procurement)
-                    </span>
-                  </label>
-
-                  <button
-                    type="submit"
-                    disabled={isAddingSpare}
-                    className="px-4 py-1.5 bg-amber-700 hover:bg-amber-800 text-white font-bold text-xs rounded transition shadow-xs cursor-pointer"
-                  >
-                    {isAddingSpare ? 'Requesting...' : 'Submit Spares Requisition'}
-                  </button>
-                </div>
-              </form>
+              )}
 
               {/* Table of Requested Parts */}
               <div>
@@ -888,29 +1792,33 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                             </td>
                             <td className="p-2 text-right">
                               {part.status !== 'Issued' ? (
-                                issuingPartId === part.id ? (
-                                  <div className="flex items-center justify-end space-x-1">
-                                    <input
-                                      type="text"
-                                      value={issueVoucher}
-                                      onChange={(e) => setIssueVoucher(e.target.value)}
-                                      placeholder="Voucher #"
-                                      className="w-20 text-xs px-1 py-0.5 border rounded font-mono"
-                                    />
+                                canIssSpares ? (
+                                  issuingPartId === part.id ? (
+                                    <div className="flex items-center justify-end space-x-1">
+                                      <input
+                                        type="text"
+                                        value={issueVoucher}
+                                        onChange={(e) => setIssueVoucher(e.target.value)}
+                                        placeholder="Voucher #"
+                                        className="w-20 text-xs px-1 py-0.5 border rounded font-mono"
+                                      />
+                                      <button
+                                        onClick={() => handleIssueSpareSubmit(part.id)}
+                                        className="px-2 py-0.5 bg-emerald-600 text-white rounded text-[10px] font-bold cursor-pointer"
+                                      >
+                                        Confirm
+                                      </button>
+                                    </div>
+                                  ) : (
                                     <button
-                                      onClick={() => handleIssueSpareSubmit(part.id)}
-                                      className="px-2 py-0.5 bg-emerald-600 text-white rounded text-[10px] font-bold cursor-pointer"
+                                      onClick={() => setIssuingPartId(part.id)}
+                                      className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[10px] font-bold cursor-pointer"
                                     >
-                                      Confirm
+                                      Issue from Stores
                                     </button>
-                                  </div>
+                                  )
                                 ) : (
-                                  <button
-                                    onClick={() => setIssuingPartId(part.id)}
-                                    className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[10px] font-bold cursor-pointer"
-                                  >
-                                    Issue from Stores
-                                  </button>
+                                  <span className="text-slate-400 text-[10px] italic">Stores Sign-Off Required</span>
                                 )
                               ) : (
                                 <span className="text-emerald-700 text-[10px] font-bold">Issued by {part.issuedBy || 'Stores'}</span>
@@ -956,7 +1864,7 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                       </div>
                     )}
                   </div>
-                ) : (
+                ) : canHandback ? (
                   <form onSubmit={handleHandbackSubmit} className="space-y-3 text-xs">
                     <p className="text-[11px] text-slate-600">
                       When the artisan returns the physical paper slip with handwritten hours and signature, enter them here:
@@ -1044,6 +1952,11 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                       </button>
                     </div>
                   </form>
+                ) : (
+                  <div className="p-3 bg-white border border-slate-200 rounded text-[11px] text-slate-600 flex items-center gap-2">
+                    <Lock className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                    <span>{getJobCardPermissionReason('handback', actor.role)}</span>
+                  </div>
                 )}
               </div>
 
@@ -1077,7 +1990,7 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                       Timestamp: {new Date(card.hodDigitalSignOff?.signedAt || card.updatedAt).toLocaleString()}
                     </div>
                   </div>
-                ) : (
+                ) : canHODSign ? (
                   <form onSubmit={handleHODSubmit} className="space-y-3 text-xs">
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
@@ -1117,6 +2030,11 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                       </button>
                     </div>
                   </form>
+                ) : (
+                  <div className="p-3 bg-white border border-purple-200 rounded text-[11px] text-slate-600 flex items-center gap-2">
+                    <Lock className="w-3.5 h-3.5 text-purple-600 shrink-0" />
+                    <span>{getJobCardPermissionReason('hod_signoff', actor.role)}</span>
+                  </div>
                 )}
               </div>
             </div>
@@ -1125,7 +2043,8 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
           {/* TAB 2: Labor Hours Logging */}
           {activeTab === 'labor' && (
             <div className="bg-white p-5 rounded-b border border-slate-200 shadow-2xs space-y-5">
-              {/* Add Labor Form */}
+              {/* Add Labor Form (Role-Gated) */}
+              {canLogLabor ? (
               <form onSubmit={handleLaborSubmit} className="p-4 bg-slate-50 border border-slate-200 rounded space-y-3">
                 <div className="text-xs font-bold text-slate-800 flex items-center justify-between">
                   <span className="flex items-center gap-1.5">
@@ -1164,7 +2083,7 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                       onChange={(e) => setLaborTrade(e.target.value as TechnicalTrade)}
                       className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white font-medium"
                     >
-                      {TECHNICAL_TRADES_LIST.map((t) => (
+                      {activeTrades.map((t) => (
                         <option key={t.id} value={t.id}>{t.id}</option>
                       ))}
                     </select>
@@ -1197,7 +2116,7 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                       onChange={(e) => setLaborShift(e.target.value as ShiftGroup)}
                       className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white font-medium"
                     >
-                      {SHIFTS_LIST.map((s) => (
+                      {activeShifts.map((s) => (
                         <option key={s.id} value={s.id}>{s.label}</option>
                       ))}
                     </select>
@@ -1258,6 +2177,12 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                   </button>
                 </div>
               </form>
+              ) : (
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded text-[11px] text-slate-600 flex items-center gap-2">
+                  <Lock className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                  <span>{getJobCardPermissionReason('labor', actor.role)}</span>
+                </div>
+              )}
 
               {/* Labor Log Table */}
               <div>
@@ -1331,7 +2256,7 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                   </p>
                 </div>
 
-                {onAddHandover && (
+                {onAddHandover && canLogLabor && (
                   <button
                     onClick={() => setShowHandoverForm(!showHandoverForm)}
                     className="px-3 py-1.5 rounded bg-[#714B67] hover:bg-[#5b3c53] text-white text-xs font-semibold cursor-pointer transition flex items-center gap-1"
@@ -1359,7 +2284,7 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                         onChange={(e) => setFromShift(e.target.value as ShiftGroup)}
                         className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white font-medium"
                       >
-                        {SHIFTS_LIST.map((s) => (
+                        {activeShifts.map((s) => (
                           <option key={s.id} value={s.id}>{s.label}</option>
                         ))}
                       </select>
@@ -1395,7 +2320,7 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                         }}
                         className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white font-medium"
                       >
-                        {SHIFTS_LIST.map((s) => (
+                        {activeShifts.map((s) => (
                           <option key={s.id} value={s.id}>{s.label}</option>
                         ))}
                       </select>
@@ -1559,10 +2484,67 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
                 </div>
               </form>
 
+              {/* Immutable 8-Stage Transition Ledger */}
+              <div className="space-y-2.5 pt-3 border-t border-slate-200">
+                <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                  <History className="w-3.5 h-3.5 text-[#714B67]" />
+                  <span>Stage Transition History ({card.statusHistory?.length || 0})</span>
+                </h4>
+
+                {(!card.statusHistory || card.statusHistory.length === 0) ? (
+                  <div className="p-3 bg-slate-50 border border-dashed border-slate-200 rounded text-slate-400 text-xs">
+                    No structured stage transitions logged yet for this legacy card (current stage: {currentWorkflowMeta.label}).
+                  </div>
+                ) : (
+                  <div className="border border-slate-200 rounded overflow-hidden">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-100 text-slate-600 text-[10px] uppercase font-bold border-b border-slate-200">
+                        <tr>
+                          <th className="py-2 px-3">Timestamp</th>
+                          <th className="py-2 px-3">Transition</th>
+                          <th className="py-2 px-3">Actor &amp; Role</th>
+                          <th className="py-2 px-3">Reason / Notes</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 bg-white">
+                        {card.statusHistory.slice().reverse().map((h) => {
+                          const toMeta = getWorkflowStageMeta(h.toStage);
+                          const fromMeta = h.fromStage ? getWorkflowStageMeta(h.fromStage) : null;
+                          return (
+                            <tr key={h.id} className="hover:bg-slate-50">
+                              <td className="py-2 px-3 font-mono text-[11px] text-slate-500 whitespace-nowrap">
+                                {new Date(h.changedAt).toLocaleString()}
+                              </td>
+                              <td className="py-2 px-3 whitespace-nowrap">
+                                {fromMeta && (
+                                  <span className="text-slate-400 mr-1.5">{fromMeta.shortLabel} →</span>
+                                )}
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${toMeta.badgeClass}`}>
+                                  {toMeta.label}
+                                </span>
+                              </td>
+                              <td className="py-2 px-3 text-slate-800 font-medium">
+                                <span>{h.changedBy}</span>
+                                {h.changedByRole && (
+                                  <span className="ml-1.5 px-1.5 py-0.2 rounded bg-slate-100 text-slate-600 text-[10px] font-semibold">
+                                    {h.changedByRole}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-2 px-3 text-slate-600">{h.reason || '—'}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
               {/* Timestamped Activity Feed */}
               <div className="space-y-3 pt-3 border-t border-slate-200">
                 <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                  Audit Trail & Timeline
+                  Audit Trail &amp; Chatter
                 </h4>
 
                 {(!card.comments || card.comments.length === 0) ? (
@@ -1614,22 +2596,50 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
 
         {/* Modal Bottom Bar */}
         <div className="bg-slate-100 px-5 py-3 border-t border-slate-200 flex items-center justify-between text-xs text-slate-500 shrink-0">
-          <div className="font-mono text-[11px]">
-            Doc ID: {card.id}
+          <div className="font-mono text-[11px] flex items-center gap-3">
+            <span>Doc ID: {card.id}</span>
+            <span className="px-2 py-0.5 rounded bg-white border border-slate-200 text-slate-700 font-sans font-semibold text-[10px]">
+              Access Role: {actor.role || 'Staff'}
+            </span>
           </div>
           <div className="flex items-center space-x-2">
-            <button
-              onClick={() => {
-                if (window.confirm(`Are you sure you want to delete Job Card ${card.jobCardNumber}?`)) {
-                  onDelete(card.id);
-                  onClose();
-                }
-              }}
-              className="px-3 py-1.5 rounded text-rose-700 hover:bg-rose-100 transition text-xs font-medium cursor-pointer flex items-center gap-1"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Delete Job Card</span>
-            </button>
+            {canDelete && !confirmDeleteCard && (
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteCard(true)}
+                className="px-3 py-1.5 rounded text-rose-700 hover:bg-rose-100 transition text-xs font-medium cursor-pointer flex items-center gap-1"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Delete Job Card</span>
+              </button>
+            )}
+            {canDelete && confirmDeleteCard && (
+              <div className="flex items-center gap-1.5 bg-rose-50 border border-rose-300 rounded px-2.5 py-1">
+                <span className="text-rose-900 font-semibold text-[11px]">Delete {card.jobCardNumber}?</span>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await onDelete(card.id);
+                      onClose();
+                    } catch (err: any) {
+                      setDetailError(err?.message || 'Delete denied.');
+                      setConfirmDeleteCard(false);
+                    }
+                  }}
+                  className="px-2 py-0.5 rounded bg-rose-700 hover:bg-rose-800 text-white font-bold text-[11px] cursor-pointer"
+                >
+                  Confirm
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmDeleteCard(false)}
+                  className="px-2 py-0.5 rounded bg-white border border-slate-300 text-slate-700 text-[11px] cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
             <button
               onClick={onClose}
               className="px-4 py-1.5 rounded bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-semibold cursor-pointer"
@@ -1639,6 +2649,42 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Inline Attachment Lightbox Modal */}
+      {previewAttachment && (
+        <div
+          className="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-4"
+          onClick={() => setPreviewAttachment(null)}
+        >
+          <div
+            className="bg-white rounded-lg max-w-3xl w-full overflow-hidden shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-4 py-2.5 bg-slate-900 text-white flex items-center justify-between text-xs">
+              <div>
+                <span className="font-bold">{previewAttachment.name}</span>
+                {previewAttachment.caption && (
+                  <span className="text-slate-300 ml-2">— {previewAttachment.caption}</span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setPreviewAttachment(null)}
+                className="p-1 hover:bg-white/10 rounded cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4 bg-slate-950 flex items-center justify-center max-h-[75vh] overflow-auto">
+              <img
+                src={previewAttachment.dataUrl}
+                alt={previewAttachment.name}
+                className="max-w-full max-h-[68vh] object-contain rounded"
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

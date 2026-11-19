@@ -41,6 +41,7 @@ import { QuickLogPhysicalSlipModal } from './components/jobcards/QuickLogPhysica
 import { StoresSparesView } from './components/spares/StoresSparesView';
 import { PhysicalSlipsView } from './components/jobcards/PhysicalSlipsView';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { OrgMasterDataProvider, useOrgMasterData } from './context/OrgMasterDataContext';
 import {
   subscribeJobCards,
   createJobCard,
@@ -54,8 +55,17 @@ import {
   addSparePartRequisition,
   issueSparePart,
   recordArtisanHandback,
-  closeOutJobCardHOD
+  closeOutJobCardHOD,
+  transitionJobCardWorkflowStage,
+  createLinkedDepartmentJobCard,
+  addJobCardAttachment,
+  removeJobCardAttachment
 } from './services/jobCardService';
+import {
+  subscribeNotifications,
+  markNotificationRead,
+  markAllNotificationsRead
+} from './services/notificationService';
 import {
   subscribeEquipment,
   safeCreateEquipment,
@@ -101,10 +111,11 @@ import {
 } from './core/master-data/powerDistributionData';
 import {
   JobCard,
+  JobCardAttachment,
   Equipment,
   JobCardStatus,
+  JobCardWorkflowStage,
   Priority,
-  DEPARTMENTS_BY_CATEGORY,
   TechnicalTrade,
   ShiftGroup,
   StoresRequisitionSlip,
@@ -119,16 +130,20 @@ import {
   InspectionTemplate,
   FeederPanelId,
   PowerVoltageTier,
-  PowerEdgeRole
+  PowerEdgeRole,
+  AppNotification
 } from './types';
 import {
-  getActiveStandbyRoster,
-  TECHNICAL_TRADES_LIST,
-  SHIFTS_LIST
-} from './core/master-data/organization';
+  canEditJobCard,
+  canIssueSpares,
+  canTransitionJobCardStatus,
+  getJobCardPermissionReason
+} from './core/jobcards/permissions';
+import { resolveWorkflowStage } from './core/jobcards/workflow';
 
 function MainApp() {
   const { currentUser, userProfile, loading: authLoading, loginWithGoogle } = useAuth();
+  const { departmentsByCategory, activeTrades, activeShifts, standbyRoster } = useOrgMasterData();
   const [authActionError, setAuthActionError] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
 
@@ -163,6 +178,7 @@ function MainApp() {
   const [inspectionTemplates, setInspectionTemplates] = useState<Record<InspectionAssetCategory, InspectionTemplate>>(
     DEFAULT_INSPECTION_TEMPLATES
   );
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Modal states
@@ -188,6 +204,7 @@ function MainApp() {
       setElectricalInspections([]);
       setElectricalInspectionReviews([]);
       setInspectionTemplates(DEFAULT_INSPECTION_TEMPLATES);
+      setNotifications([]);
       setLoading(false);
       return;
     }
@@ -271,6 +288,15 @@ function MainApp() {
       }
     );
 
+    const unsubNotifications = subscribeNotifications(
+      (items) => {
+        setNotifications(items);
+      },
+      (err) => {
+        console.error('Notifications subscription error:', err);
+      }
+    );
+
     return () => {
       unsubCards();
       unsubEquip();
@@ -281,6 +307,7 @@ function MainApp() {
       unsubInspections();
       unsubInspectionReviews();
       unsubTemplates();
+      unsubNotifications();
     };
   }, [currentUser, authLoading]);
 
@@ -324,18 +351,27 @@ function MainApp() {
   }, [jobCards, userProfile]);
 
   const pendingSparesCountAll = React.useMemo(() => {
-    return jobCards.filter((c) =>
-      c.status === 'Pending Spares' ||
-      c.requisitionStage === 'Pending Spares' ||
-      (c.sparesRequested && c.sparesRequested.some(p => p.status === 'Requested'))
-    ).length;
+    return jobCards.filter((c) => {
+      const stage = resolveWorkflowStage(c);
+      return (
+        c.status === 'Pending Spares' ||
+        c.requisitionStage === 'Pending Spares' ||
+        stage === 'WAITING_FOR_PARTS' ||
+        stage === 'WAITING_FOR_SHUTDOWN' ||
+        (c.sparesRequested && c.sparesRequested.some(p => p.status === 'Requested'))
+      );
+    }).length;
   }, [jobCards]);
 
   const awaitingHODCount = React.useMemo(() => {
-    return jobCards.filter((c) =>
-      c.requisitionStage === 'Artisan Completed' ||
-      (c.status === 'Completed' && !c.hodDigitalSignOff)
-    ).length;
+    return jobCards.filter((c) => {
+      const stage = resolveWorkflowStage(c);
+      return (
+        stage === 'WORK_COMPLETE' ||
+        c.requisitionStage === 'Artisan Completed' ||
+        (c.status === 'Completed' && !c.hodDigitalSignOff)
+      );
+    }).length;
   }, [jobCards]);
 
   const paperSlipsCount = React.useMemo(() => {
@@ -360,31 +396,56 @@ function MainApp() {
                ((c.originatedBy && c.originatedBy.toLowerCase().includes(myName)) || (c.createdByName && c.createdByName.toLowerCase().includes(myName)));
       }
       if (departmentQueue === 'PENDING_SPARES') {
+        const stage = resolveWorkflowStage(c);
         return c.status === 'Pending Spares' ||
           c.requisitionStage === 'Pending Spares' ||
+          stage === 'WAITING_FOR_PARTS' ||
+          stage === 'WAITING_FOR_SHUTDOWN' ||
           (c.sparesRequested && c.sparesRequested.some(p => p.status === 'Requested'));
       }
       if (departmentQueue === 'AWAITING_HOD') {
-        return c.requisitionStage === 'Artisan Completed' ||
+        const stage = resolveWorkflowStage(c);
+        return stage === 'WORK_COMPLETE' ||
+          c.requisitionStage === 'Artisan Completed' ||
           (c.status === 'Completed' && !c.hodDigitalSignOff);
       }
       return true;
     });
   }, [jobCards, departmentQueue, userProfile]);
 
+  const currentActorContext = useMemo(
+    () => ({
+      uid: currentUser?.uid || userProfile?.uid,
+      role: userProfile?.role,
+      email: userProfile?.email || currentUser?.email
+    }),
+    [currentUser, userProfile]
+  );
+
   // Handlers for Job Card CRUD
   const handleCreateOrUpdateJobCard = async (cardData: any) => {
     if (selectedCardForEdit) {
-      await updateJobCard(selectedCardForEdit.id, cardData);
+      if (!canEditJobCard(currentActorContext, selectedCardForEdit)) {
+        throw new Error(getJobCardPermissionReason('edit', currentActorContext.role));
+      }
+      await updateJobCard(selectedCardForEdit.id, cardData, {
+        actor: currentActorContext,
+        existingCard: selectedCardForEdit
+      });
       setSelectedCardForEdit(null);
     } else {
-      await createJobCard(cardData, userProfile || undefined);
+      await createJobCard(cardData, userProfile ? {
+        uid: currentUser?.uid || userProfile.uid,
+        displayName: userProfile.displayName,
+        role: userProfile.role,
+        email: userProfile.email || currentUser?.email
+      } : undefined);
     }
   };
 
   const handleUpdateStatus = async (card: JobCard, newStatus: JobCardStatus) => {
     const actor = userProfile?.displayName || 'Authorized Staff';
-    await updateJobCardStatus(card, newStatus, actor);
+    await updateJobCardStatus(card, newStatus, actor, currentActorContext);
   };
 
   const handleAddLabor = async (
@@ -399,11 +460,11 @@ function MainApp() {
       shift?: ShiftGroup;
     }
   ) => {
-    await addLaborHours(card, tech, date, hours, notes, options);
+    await addLaborHours(card, tech, date, hours, notes, options, currentActorContext);
   };
 
   const handleAddHandover = async (card: JobCard, handover: any) => {
-    await addShiftHandover(card, handover);
+    await addShiftHandover(card, handover, currentActorContext);
   };
 
   const handleAddComment = async (card: JobCard, author: string, message: string) => {
@@ -411,7 +472,7 @@ function MainApp() {
   };
 
   const handleDeleteJobCard = async (id: string) => {
-    await deleteJobCard(id);
+    await deleteJobCard(id, currentActorContext);
     if (selectedCardForDetail?.id === id) {
       setSelectedCardForDetail(null);
     }
@@ -707,6 +768,17 @@ function MainApp() {
         emergencyCount={emergencyCount}
         onOpenLogin={() => setIsLoginModalOpen(true)}
         onSelectView={(v) => setCurrentView(v as any)}
+        notifications={notifications}
+        currentUserUid={currentUser?.uid}
+        onMarkNotificationRead={(id) => markNotificationRead(id)}
+        onMarkAllNotificationsRead={() => markAllNotificationsRead(notifications)}
+        onOpenJobCardFromNotification={(jobCardId) => {
+          const matched = jobCards.find((c) => c.id === jobCardId);
+          if (matched) {
+            setCurrentView('jobcards');
+            setSelectedCardForDetail(matched);
+          }
+        }}
       />
 
       {/* Main Container: Sidebar + Content */}
@@ -895,7 +967,10 @@ function MainApp() {
               jobCards={jobCards}
               storesSlips={storesSlips}
               onSelectCard={(card) => setSelectedCardForDetail(card)}
-              onIssueSparePart={issueSparePart}
+              onIssueSparePart={(card, partId, params) =>
+                issueSparePart(card, partId, params, currentActorContext)
+              }
+              canIssueSpares={canIssueSpares(userProfile?.role, userProfile?.email || currentUser?.email)}
               onCreateStoresSlip={async (data) => {
                 await createStoresSlip(data, { currentUser: userProfile?.displayName });
               }}
@@ -1004,7 +1079,7 @@ function MainApp() {
                     className="px-2.5 py-1.5 border border-slate-300 rounded bg-white text-slate-700 focus:outline-none"
                   >
                     <option value="">All Trades</option>
-                    {TECHNICAL_TRADES_LIST.map((t) => (
+                    {activeTrades.map((t) => (
                       <option key={t.id} value={t.id}>{t.id}</option>
                     ))}
                   </select>
@@ -1016,7 +1091,7 @@ function MainApp() {
                     className="px-2.5 py-1.5 border border-slate-300 rounded bg-white text-slate-700 focus:outline-none font-medium"
                   >
                     <option value="">All Shifts / Rosters</option>
-                    {SHIFTS_LIST.map((s) => (
+                    {activeShifts.map((s) => (
                       <option key={s.id} value={s.id}>{s.label}</option>
                     ))}
                   </select>
@@ -1030,7 +1105,7 @@ function MainApp() {
                       className="px-2.5 py-1.5 border border-slate-300 rounded bg-white text-slate-700 focus:outline-none"
                     >
                       <option value="">All Departments</option>
-                      {DEPARTMENTS_BY_CATEGORY.map((g) => (
+                      {departmentsByCategory.map((g) => (
                         <optgroup key={g.category} label={g.category}>
                           {g.departments.map((d) => (
                             <option key={d} value={`${g.category} - ${d}`}>
@@ -1201,6 +1276,7 @@ function MainApp() {
                   })}
                   onSelectCard={(card) => setSelectedCardForDetail(card)}
                   onUpdateStatus={handleUpdateStatus}
+                  canTransitionCard={(card, nextStatus) => canTransitionJobCardStatus(currentActorContext, card, nextStatus)}
                   selectedDepartment={selectedDepartment}
                   selectedPriority={selectedPriority}
                   searchQuery={searchQuery}
@@ -1241,6 +1317,8 @@ function MainApp() {
         prefillData={jobCardPrefill}
         existingCards={jobCards}
         equipmentList={equipmentList}
+        userRole={userProfile?.role}
+        userEmail={userProfile?.email || currentUser?.email}
       />
 
       {/* 2. Job Card Detail / Labor Log / Shift Handover / Chatter / Supervisor & HOD Workflow Modal */}
@@ -1258,11 +1336,44 @@ function MainApp() {
           setSelectedCardForDetail(null);
           setSelectedCardForPrint(card);
         }}
-        onAcceptRequisition={acceptAndAssignRequisition}
-        onAddSparePart={addSparePartRequisition}
-        onIssueSparePart={issueSparePart}
-        onRecordHandback={recordArtisanHandback}
-        onHODCloseOut={closeOutJobCardHOD}
+        onAcceptRequisition={(card, params) => acceptAndAssignRequisition(card, params, currentActorContext)}
+        onAddSparePart={(card, part) => addSparePartRequisition(card, part, currentActorContext)}
+        onIssueSparePart={(card, partId, params) => issueSparePart(card, partId, params, currentActorContext)}
+        onRecordHandback={(card, params) => recordArtisanHandback(card, params, currentActorContext)}
+        onHODCloseOut={(card, params) => closeOutJobCardHOD(card, params, currentActorContext)}
+        allJobCards={jobCards}
+        onSelectCard={(target) => setSelectedCardForDetail(target)}
+        onTransitionWorkflowStage={(card, targetStage: JobCardWorkflowStage, reason?: string) =>
+          transitionJobCardWorkflowStage(card, targetStage, {
+            actorName: userProfile?.displayName || userProfile?.email || currentUser?.email || 'Authorized Staff',
+            reason,
+            actor: currentActorContext
+          })
+        }
+        onSpawnLinkedJob={(parentCard, params) =>
+          createLinkedDepartmentJobCard(
+            parentCard,
+            params,
+            {
+              uid: currentUser?.uid || userProfile?.uid || 'anonymous-user',
+              displayName: userProfile?.displayName || userProfile?.email || currentUser?.email || 'Authorized Staff',
+              role: userProfile?.role,
+              email: userProfile?.email || currentUser?.email
+            },
+            jobCards
+          )
+        }
+        onAddAttachment={(card, attachment: JobCardAttachment) =>
+          addJobCardAttachment(card, attachment, currentActorContext)
+        }
+        onRemoveAttachment={(card, attachmentId) =>
+          removeJobCardAttachment(
+            card,
+            attachmentId,
+            userProfile?.displayName || userProfile?.email || currentUser?.email || 'Supervisor',
+            currentActorContext
+          )
+        }
       />
 
       {/* 3. Physical Work Order Sheet Modal (Print view matching real slip) */}
@@ -1323,10 +1434,12 @@ function MainApp() {
                   Weekly On-Call Standby (Wed-to-Wed):
                 </span>
                 <div className="text-slate-800 space-y-1 text-[11px]">
-                  <div>⚡ <strong>Electrician:</strong> Msebenzi Gamedze (Bongani Sup)</div>
-                  <div>🛠️ <strong>Boilermaker:</strong> John Khoza (Sam Sup)</div>
-                  <div>🔥 <strong>Welder:</strong> Makhosi Mbhamali (Sam Sup)</div>
-                  <div>🎨 <strong>Painting / Support:</strong> 3 Painters + 5 Helpers (Day)</div>
+                  {standbyRoster.map((entry) => (
+                    <div key={entry.trade}>
+                      <strong>{entry.trade}:</strong> {entry.onDuty.name} ({entry.supervisor})
+                      {entry.backup?.name ? ` • Relief: ${entry.backup.name}` : ''}
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
@@ -1349,7 +1462,9 @@ function MainApp() {
 export default function App() {
   return (
     <AuthProvider>
-      <MainApp />
+      <OrgMasterDataProvider>
+        <MainApp />
+      </OrgMasterDataProvider>
     </AuthProvider>
   );
 }

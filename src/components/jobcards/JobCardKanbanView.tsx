@@ -10,14 +10,17 @@ import {
   Package,
   FileEdit,
   XCircle,
-  MoreVertical
+  MoreVertical,
+  GitBranch
 } from 'lucide-react';
 import { JobCard, JobCardStatus, Priority } from '../../types';
+import { getWorkflowStageMeta, resolveWorkflowStage } from '../../core/jobcards/workflow';
 
 interface JobCardKanbanViewProps {
   jobCards: JobCard[];
   onSelectCard: (card: JobCard) => void;
   onUpdateStatus: (card: JobCard, newStatus: JobCardStatus) => void;
+  canTransitionCard?: (card: JobCard, newStatus: JobCardStatus) => boolean;
   selectedDepartment: string;
   selectedPriority: string;
   searchQuery: string;
@@ -65,11 +68,22 @@ export const JobCardKanbanView: React.FC<JobCardKanbanViewProps> = ({
   jobCards,
   onSelectCard,
   onUpdateStatus,
+  canTransitionCard,
   selectedDepartment,
   selectedPriority,
   searchQuery
 }) => {
   const [draggedCardId, setDraggedCardId] = useState<string | null>(null);
+
+  const childCountByParentId = React.useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const c of jobCards) {
+      if (c.parentJobCardId) {
+        counts[c.parentJobCardId] = (counts[c.parentJobCardId] || 0) + 1;
+      }
+    }
+    return counts;
+  }, [jobCards]);
 
   // Filter cards
   const filteredCards = jobCards.filter((card) => {
@@ -130,7 +144,9 @@ export const JobCardKanbanView: React.FC<JobCardKanbanViewProps> = ({
     if (cardId) {
       const card = jobCards.find((c) => c.id === cardId);
       if (card && card.status !== targetStatus) {
-        onUpdateStatus(card, targetStatus);
+        if (!canTransitionCard || canTransitionCard(card, targetStatus)) {
+          onUpdateStatus(card, targetStatus);
+        }
       }
     }
     setDraggedCardId(null);
@@ -208,36 +224,64 @@ export const JobCardKanbanView: React.FC<JobCardKanbanViewProps> = ({
                         {card.equipmentName}
                       </h4>
 
-                      {/* Trade, Shift & Safety Badges */}
-                      {(card.tradeRequired || card.shiftAssigned || card.safetyPermits?.lotoRequired || card.safetyPermits?.hotWorkRequired || card.requisitionStage) && (
-                        <div className="flex flex-wrap items-center gap-1 mb-1.5 text-[10px]">
-                          {card.requisitionStage && card.requisitionStage !== card.status && (
-                            <span className="px-1.5 py-0.2 rounded bg-amber-50 text-amber-900 font-bold border border-amber-200">
-                              {card.requisitionStage}
-                            </span>
-                          )}
-                          {card.tradeRequired && (
-                            <span className="px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 font-medium border border-indigo-200">
-                              {card.tradeRequired}
-                            </span>
-                          )}
-                          {card.shiftAssigned && (
-                            <span className="px-1 py-0.2 rounded bg-slate-100 text-slate-700 font-mono">
-                              {card.shiftAssigned}
-                            </span>
-                          )}
-                          {card.safetyPermits?.lotoRequired && (
-                            <span title="LOTO Active" className="bg-amber-100 text-amber-900 px-1 py-0.2 rounded font-bold">
-                              ⚡LOTO
-                            </span>
-                          )}
-                          {card.safetyPermits?.hotWorkRequired && (
-                            <span title="Hot Work Permit Active" className="text-rose-600 font-bold">
-                              🔥
-                            </span>
-                          )}
-                        </div>
-                      )}
+                      {/* Trade, Shift, 8-Stage Workflow, Linked Family & Safety Badges */}
+                      {(() => {
+                        const stage = resolveWorkflowStage(card);
+                        const stageMeta = getWorkflowStageMeta(stage);
+                        const childCount = childCountByParentId[card.id] || 0;
+                        const showStageChip =
+                          stage === 'ACCEPTED' ||
+                          stage === 'WAITING_FOR_SHUTDOWN' ||
+                          stage === 'WORK_COMPLETE' ||
+                          stage === 'CLOSED';
+                        return (
+                          <div className="flex flex-wrap items-center gap-1 mb-1.5 text-[10px]">
+                            {showStageChip && (
+                              <span className={`px-1.5 py-0.2 rounded font-bold border ${stageMeta.badgeClass}`}>
+                                {stageMeta.shortLabel}
+                              </span>
+                            )}
+                            {card.parentJobCardNumber && (
+                              <span
+                                title={`Companion job linked to ${card.parentJobCardNumber}`}
+                                className="px-1.5 py-0.2 rounded bg-teal-50 text-teal-800 font-mono font-semibold border border-teal-200 inline-flex items-center gap-0.5"
+                              >
+                                <GitBranch className="w-2.5 h-2.5" />
+                                Sub of {card.parentJobCardNumber}
+                              </span>
+                            )}
+                            {childCount > 0 && (
+                              <span
+                                title={`${childCount} linked companion department job(s)`}
+                                className="px-1.5 py-0.2 rounded bg-purple-50 text-[#714B67] font-bold border border-purple-200 inline-flex items-center gap-0.5"
+                              >
+                                <GitBranch className="w-2.5 h-2.5" />
+                                {childCount} Linked
+                              </span>
+                            )}
+                            {card.tradeRequired && (
+                              <span className="px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 font-medium border border-indigo-200">
+                                {card.tradeRequired}
+                              </span>
+                            )}
+                            {card.shiftAssigned && (
+                              <span className="px-1 py-0.2 rounded bg-slate-100 text-slate-700 font-mono">
+                                {card.shiftAssigned}
+                              </span>
+                            )}
+                            {card.safetyPermits?.lotoRequired && (
+                              <span title="LOTO Active" className="bg-amber-100 text-amber-900 px-1 py-0.2 rounded font-bold">
+                                ⚡LOTO
+                              </span>
+                            )}
+                            {card.safetyPermits?.hotWorkRequired && (
+                              <span title="Hot Work Permit Active" className="text-rose-600 font-bold">
+                                🔥
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })()}
 
                       {/* Department / Inter-departmental Routing */}
                       <div className="text-[11px] text-slate-500 mb-2 truncate">
@@ -285,38 +329,43 @@ export const JobCardKanbanView: React.FC<JobCardKanbanViewProps> = ({
 
                         {/* Quick Shift Buttons */}
                         <div className="flex items-center space-x-1 opacity-0 group-hover:opacity-100 transition">
-                          {column.id !== 'Draft' && (
-                            <button
-                              title="Move back"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                const prevStatus =
-                                  column.id === 'Cancelled' ? 'In Progress' :
-                                  column.id === 'Completed' ? 'In Progress' :
-                                  column.id === 'Pending Spares' ? 'In Progress' : 'Draft';
-                                onUpdateStatus(card, prevStatus);
-                              }}
-                              className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-slate-800 cursor-pointer"
-                            >
-                              <ArrowLeft className="w-3 h-3" />
-                            </button>
-                          )}
+                          {column.id !== 'Draft' && (() => {
+                            const prevStatus: JobCardStatus =
+                              column.id === 'Cancelled' ? 'In Progress' :
+                              column.id === 'Completed' ? 'In Progress' :
+                              column.id === 'Pending Spares' ? 'In Progress' : 'Draft';
+                            if (canTransitionCard && !canTransitionCard(card, prevStatus)) return null;
+                            return (
+                              <button
+                                title={`Move back to ${prevStatus}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onUpdateStatus(card, prevStatus);
+                                }}
+                                className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-slate-800 cursor-pointer"
+                              >
+                                <ArrowLeft className="w-3 h-3" />
+                              </button>
+                            );
+                          })()}
 
-                          {column.id !== 'Completed' && column.id !== 'Cancelled' && (
-                            <button
-                              title="Move forward"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                const nextStatus =
-                                  column.id === 'Draft' ? 'In Progress' :
-                                  column.id === 'In Progress' ? 'Completed' : 'Completed';
-                                onUpdateStatus(card, nextStatus);
-                              }}
-                              className="p-1 rounded hover:bg-purple-100 text-[#714B67] cursor-pointer"
-                            >
-                              <ArrowRight className="w-3 h-3" />
-                            </button>
-                          )}
+                          {column.id !== 'Completed' && column.id !== 'Cancelled' && (() => {
+                            const nextStatus: JobCardStatus =
+                              column.id === 'Draft' ? 'In Progress' : 'Completed';
+                            if (canTransitionCard && !canTransitionCard(card, nextStatus)) return null;
+                            return (
+                              <button
+                                title={`Move forward to ${nextStatus}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onUpdateStatus(card, nextStatus);
+                                }}
+                                className="p-1 rounded hover:bg-purple-100 text-[#714B67] cursor-pointer"
+                              >
+                                <ArrowRight className="w-3 h-3" />
+                              </button>
+                            );
+                          })()}
                         </div>
                       </div>
                     </div>

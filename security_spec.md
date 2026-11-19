@@ -20,6 +20,26 @@
    - `/electricalInspectionReviews/{reviewId}` is strictly append-only (`allow update, delete: if false;`), restricted to Supervisors/Managers/Admins (`isElectricalEngineer()`), with `reviewerUid == request.auth.uid` and `createdAt == request.time`.
 7. **Admin-Controlled Inspection Templates**:
    - `/inspectionTemplates/{templateId}` restricts `templateId in ['CIRCUIT_BREAKER', 'TRANSFORMER', 'MOTOR', 'MCC_DB']` and limits `create`/`update` to Engineering Administrators (`Admin` / `Manager` via `isEngineeringAdmin()`) with `updatedByUid == request.auth.uid` and `updatedAt == request.time`.
+8. **Job Card RBAC, 8-Stage Workflow & Linked Multi-Department Integrity**:
+   - All `jobCards` mutations enforce `isValidJobCard(incoming())`, immutable `createdById`, `createdAt`, `parentJobCardId`, `parentJobCardNumber`, and non-terminal existing state (`!(existing().status in ['Completed', 'Cancelled'])`) for non-Admins.
+   - `workflowStage` must be one of `['SUBMITTED', 'ACCEPTED', 'IN_PROGRESS', 'WAITING_FOR_PARTS', 'WAITING_FOR_SHUTDOWN', 'WORK_COMPLETE', 'CLOSED', 'CANCELLED']`, `holdReason` `<= 500` chars, and `statusHistory` `<= 200` entries.
+   - `create`: Requires `incoming().createdById == request.auth.uid || isAdmin()`, and only Supervisors/Managers/Admins may create cards directly in `Completed`, `Cancelled`, `WORK_COMPLETE`, `WAITING_FOR_SHUTDOWN`, or `CLOSED` (with `CLOSED` / `HOD Closed` restricted to `Manager`/`Admin`).
+   - `update`: Tiered by role:
+     - `Admin`: Full override including reopening terminal cards.
+     - `Manager`: Full workflow updates including Stage 7 `CLOSED` (`hodSignedBy`, `hodDigitalSignOff`, `requisitionStage == 'HOD Closed'`).
+     - `Supervisor`: Assignment, shutdown deferral (`WAITING_FOR_SHUTDOWN`), handback (`WORK_COMPLETE`), spares, labor, and spawning linked companion department jobs (`parentJobCardId`), but CANNOT set `workflowStage == 'CLOSED'`, `requisitionStage == 'HOD Closed'`, or touch `hodSignedBy`/`hodDigitalSignOff`.
+     - `Technician`: Limited to open cards and `affectedKeys().hasOnly(['comments', 'laborLogs', 'totalLaborHours', 'shiftHandovers', 'shiftAssigned', 'assignedTo', 'sparesRequested', 'attachments', 'status', 'requisitionStage', 'workflowStage', 'statusHistory', 'holdReason', 'safetyPermits', 'updatedAt'])`; may only set `workflowStage in ['IN_PROGRESS', 'WAITING_FOR_PARTS']` (cannot set `WAITING_FOR_SHUTDOWN`, `WORK_COMPLETE`, `CLOSED`, or `CANCELLED`), and cannot set `status in ['Completed', 'Cancelled']` or `'HOD Closed'`/`'Artisan Completed'`.
+     - `Storeman`: Limited to open cards and `affectedKeys().hasOnly(['sparesRequested', 'comments', 'status', 'requisitionStage', 'workflowStage', 'statusHistory', 'holdReason', 'updatedAt'])`; may only set `workflowStage in ['IN_PROGRESS', 'WAITING_FOR_PARTS']`, and cannot close/complete/assign or touch HOD fields.
+     - `Operator`: Can only edit their own `'Draft'` card (blocked from modifying `workflowStage`, `statusHistory`, `holdReason`, `parentJobCardId`, `parentJobCardNumber`, `attachments`, or supervisor/HOD/spares/labor fields) or append `'comments'` on open cards.
+   - `attachments` array is strictly capped at `<= 4` items to preserve the 1 MB Firestore document ceiling.
+   - `delete`: Strictly `isAdmin()` to preserve maintenance audit trails.
+9. **Configurable Organization Master Data Governance (`/orgMasterData/plant-default`)**:
+   - Signed-in users may read (`get` on `'plant-default'`, `list` on `/orgMasterData`).
+   - Only `Manager` or `Admin` (`isEngineeringAdmin()`) may `create` or `update` `/orgMasterData/plant-default`, enforcing `isValidOrgMasterData(incoming())`, bounded arrays (`departments <= 30`, `trades <= 20`, `shifts <= 20`, `standbyRoster <= 20`), and `updatedByUid == request.auth.uid`. Delete is permanently denied (`allow delete: if false;`).
+10. **Persistent Plant Notification Feed & Read-Receipt Isolation (`/notifications/{notificationId}`)**:
+   - Signed-in users may `get` / `list` notifications.
+   - `create` requires signed-in attribution `createdByUid == request.auth.uid` and valid `severity in ['INFO', 'ACTION_REQUIRED', 'EMERGENCY']` + `type` allowlist.
+   - Non-admin `update` is strictly restricted to `affectedKeys().hasOnly(['readByUids'])` (`readByUids.size() <= 500`), preventing anyone from tampering with alert title, message, severity, or attribution. `delete` is strictly `isAdmin()`.
 
 ## 2. Adversarial "Dirty Dozen" Payloads (Expected: PERMISSION_DENIED)
 1. **Unauthenticated SLD write**: `{ "code": "C8", "operatingState": "OPEN" }` on `/powerDistributionNodes/C8` with `auth == null`.
@@ -40,4 +60,13 @@
 16. **Technician Approving Own Inspection**: `Technician` creating `/electricalInspectionReviews/{id}` (fails `isElectricalEngineer()`).
 17. **Non-Admin Modifying Inspection Templates**: `Technician` or `Supervisor` updating `/inspectionTemplates/CIRCUIT_BREAKER` (fails `isEngineeringAdmin()`).
 18. **Operator Submitting Electrical Inspection**: `Operator` creating `/electricalInspections/{id}` (fails role check).
-
+19. **Technician Closing or Completing a Job Card**: `Technician` updating `/jobCards/{id}` with `{ "status": "Completed" }` (fails status transition check for non-supervisors).
+20. **Supervisor Forging HOD Sign-Off**: `Supervisor` updating `/jobCards/{id}` with `{ "hodSignedBy": "Antonio Miranda", "requisitionStage": "HOD Closed", "workflowStage": "CLOSED", "status": "Completed" }` (fails `Manager`/`Admin` HOD check).
+21. **Operator Editing Another User's Draft or Assigning Work**: `Operator` updating `/jobCards/{id}` created by someone else or changing `assignedSupervisor` / `status: "In Progress"` (fails `Operator` Draft ownership + key check).
+22. **Non-Admin Deleting a Job Card**: `Supervisor`, `Manager`, `Technician`, or `Operator` (even the card creator) calling `delete` on `/jobCards/{id}` (fails `isAdmin()`).
+23. **Mutation of Job Card Creator or Parent Link Attribution**: Any non-Admin user updating `/jobCards/{id}` with `{ "createdById": "other-uid" }` or `{ "parentJobCardId": "forged-parent" }` (fails immutability check).
+24. **Technician Setting Supervisor-Only Workflow Stage**: `Technician` updating `/jobCards/{id}` with `{ "workflowStage": "WAITING_FOR_SHUTDOWN" }` or `{ "workflowStage": "WORK_COMPLETE" }` (fails Technician stage allowlist).
+25. **Operator Forging Workflow Stage or Status History**: `Operator` updating `/jobCards/{id}` with `{ "workflowStage": "ACCEPTED", "statusHistory": [...] }` (fails Operator key blacklist).
+26. **Non-Admin Modifying Plant Master Data**: `Supervisor`, `Technician`, or `Operator` writing to `/orgMasterData/plant-default` (fails `isEngineeringAdmin()`).
+27. **Spoofing or Tampering with Plant Notifications**: User creating `/notifications/{id}` with `createdByUid != request.auth.uid`, or non-Admin updating `title`, `message`, or `severity` on an existing notification (fails `readByUids`-only diff guard).
+28. **Attachment Array Overflow on Job Card**: Any user writing `> 4` entries in `jobCard.attachments` (fails `data.attachments.size() <= 4`).

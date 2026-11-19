@@ -23,7 +23,7 @@ import {
   CheckCircle2,
   X
 } from 'lucide-react';
-import { getActiveStandbyRoster } from '../../core/master-data/organization';
+import { useOrgMasterData } from '../../context/OrgMasterDataContext';
 
 interface EnterpriseLaunchpadProps {
   onNavigate: (view: 'dashboard' | 'jobcards' | 'equipment' | 'electrical' | 'organogram' | 'reports' | 'settings') => void;
@@ -48,7 +48,7 @@ export const EnterpriseLaunchpad: React.FC<EnterpriseLaunchpadProps> = ({
     return () => clearInterval(timer);
   }, []);
 
-  const standbyRoster = getActiveStandbyRoster();
+  const { standbyRoster } = useOrgMasterData();
   const activeElectrician = standbyRoster.find((r) => r.trade === 'Electrician')?.onDuty.name || 'Msebenzi Gamedze';
   const activeBoilermaker = standbyRoster.find((r) => r.trade === 'Boilermaker')?.onDuty.name || 'John Khoza';
 

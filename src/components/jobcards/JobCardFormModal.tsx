@@ -22,22 +22,21 @@ import {
   JobCard,
   Priority,
   JobCardStatus,
-  DEPARTMENTS_BY_CATEGORY,
   Equipment,
   TechnicalTrade,
   ShiftGroup,
   SafetyPermits,
-  ElectricalJobCardPrefill
+  ElectricalJobCardPrefill,
+  UserProfile
 } from '../../types';
 import { generateNextJobCardNumber } from '../../services/jobCardService';
+import { getAllowedFormStatuses, isJobCardAdmin, isJobCardTerminal } from '../../core/jobcards/permissions';
 import {
   COMPANY_ORGANOGRAM,
-  TECHNICAL_TRADES_LIST,
-  SHIFTS_LIST,
-  getActiveStandbyRoster,
   getStaffByTrade,
   getStaffByShift
 } from '../../core/master-data/organization';
+import { useOrgMasterData } from '../../context/OrgMasterDataContext';
 
 interface JobCardFormModalProps {
   isOpen: boolean;
@@ -47,6 +46,8 @@ interface JobCardFormModalProps {
   prefillData?: ElectricalJobCardPrefill | null;
   existingCards: JobCard[];
   equipmentList: Equipment[];
+  userRole?: UserProfile['role'];
+  userEmail?: string | null;
 }
 
 export const JobCardFormModal: React.FC<JobCardFormModalProps> = ({
@@ -56,7 +57,9 @@ export const JobCardFormModal: React.FC<JobCardFormModalProps> = ({
   existingCard,
   prefillData = null,
   existingCards,
-  equipmentList
+  equipmentList,
+  userRole,
+  userEmail
 }) => {
   const [departmentCategory, setDepartmentCategory] = useState<string>('Utilities');
   const [department, setDepartment] = useState<string>('Utilities - Boiler House');
@@ -97,9 +100,14 @@ export const JobCardFormModal: React.FC<JobCardFormModalProps> = ({
   const [confinedSpaceRequired, setConfinedSpaceRequired] = useState<boolean>(false);
   const [heightPermitRequired, setHeightPermitRequired] = useState<boolean>(false);
 
-  // Selected equipment technical specs
+  // Live configurable org master data + selected equipment specs
+  const {
+    departmentsByCategory,
+    activeTrades,
+    activeShifts,
+    standbyRoster
+  } = useOrgMasterData();
   const selectedEquipment = equipmentList.find((e) => e.id === equipmentId || e.name === equipmentName);
-  const standbyRoster = getActiveStandbyRoster();
 
   // Initialize or reset form
   useEffect(() => {
@@ -222,7 +230,7 @@ export const JobCardFormModal: React.FC<JobCardFormModalProps> = ({
   // Recalculate auto JC number when category changes (only in create mode)
   const handleCategoryChange = (cat: string) => {
     setDepartmentCategory(cat);
-    const group = DEPARTMENTS_BY_CATEGORY.find((g) => g.category === cat);
+    const group = departmentsByCategory.find((g) => g.category === cat);
     if (group && group.departments.length > 0) {
       setDepartment(`${cat} - ${group.departments[0]}`);
     }
@@ -380,7 +388,7 @@ export const JobCardFormModal: React.FC<JobCardFormModalProps> = ({
 
   if (!isOpen) return null;
 
-  const currentCategoryGroup = DEPARTMENTS_BY_CATEGORY.find((g) => g.category === departmentCategory);
+  const currentCategoryGroup = departmentsByCategory.find((g) => g.category === departmentCategory);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 overflow-y-auto">
@@ -604,17 +612,31 @@ export const JobCardFormModal: React.FC<JobCardFormModalProps> = ({
               <label className="block text-[11px] font-semibold text-slate-700 mb-1">
                 Status
               </label>
-              <select
-                value={status}
-                onChange={(e) => setStatus(e.target.value as JobCardStatus)}
-                className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded focus:border-[#714B67] bg-white font-medium"
-              >
-                <option value="Draft">Draft</option>
-                <option value="In Progress">In Progress</option>
-                <option value="Pending Spares">Pending Spares</option>
-                <option value="Completed">Completed</option>
-                <option value="Cancelled">Cancelled</option>
-              </select>
+              {(() => {
+                const allowedStatuses = getAllowedFormStatuses(userRole, userEmail, existingCard?.status);
+                const lockedTerminal = Boolean(existingCard && isJobCardTerminal(existingCard) && !isJobCardAdmin(userRole, userEmail));
+                const statusLabels: Record<JobCardStatus, string> = {
+                  Draft: 'Draft',
+                  'In Progress': 'In Progress',
+                  'Pending Spares': 'Pending Spares',
+                  Completed: 'Completed',
+                  Cancelled: 'Cancelled'
+                };
+                return (
+                  <select
+                    value={status}
+                    disabled={lockedTerminal || allowedStatuses.length <= 1}
+                    onChange={(e) => setStatus(e.target.value as JobCardStatus)}
+                    className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded focus:border-[#714B67] bg-white font-medium disabled:bg-slate-100 disabled:text-slate-500"
+                  >
+                    {allowedStatuses.map((st) => (
+                      <option key={st} value={st}>
+                        {statusLabels[st]}
+                      </option>
+                    ))}
+                  </select>
+                );
+              })()}
             </div>
 
             <div>
@@ -746,7 +768,7 @@ export const JobCardFormModal: React.FC<JobCardFormModalProps> = ({
                   onChange={(e) => handleTradeChange(e.target.value as TechnicalTrade)}
                   className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded focus:border-[#714B67] bg-white font-medium"
                 >
-                  {TECHNICAL_TRADES_LIST.map((t) => (
+                  {activeTrades.map((t) => (
                     <option key={t.id} value={t.id}>
                       {t.id} ({t.crewType})
                     </option>
@@ -763,7 +785,7 @@ export const JobCardFormModal: React.FC<JobCardFormModalProps> = ({
                   onChange={(e) => handleShiftChange(e.target.value as ShiftGroup)}
                   className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded focus:border-[#714B67] bg-white font-medium"
                 >
-                  {SHIFTS_LIST.map((s) => (
+                  {activeShifts.map((s) => (
                     <option key={s.id} value={s.id}>
                       {s.label} ({s.timing})
                     </option>

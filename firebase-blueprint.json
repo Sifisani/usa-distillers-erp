@@ -59,13 +59,204 @@
           "type": "string",
           "description": "Display name or email of the creator"
         },
+        "equipmentCode": {
+          "type": "string",
+          "description": "Linked plant equipment tag code",
+          "maxLength": 50
+        },
+        "electricalFeeder": {
+          "type": "string",
+          "description": "Electrical SLD feeder panel/breaker designation",
+          "maxLength": 150
+        },
+        "inspectionId": {
+          "type": "string",
+          "description": "Source electrical inspection document ID if raised from an inspection",
+          "maxLength": 128
+        },
+        "inspectionReference": {
+          "type": "string",
+          "description": "Inspection serial reference",
+          "maxLength": 60
+        },
+        "workOrderNumber": {
+          "type": "string",
+          "description": "Red pre-printed physical works requisition slip number",
+          "maxLength": 50
+        },
+        "requisitionType": {
+          "type": "string",
+          "enum": ["Normal", "Call Out", "Stop Day"],
+          "description": "Maintenance requisition urgency classification"
+        },
+        "costCenter": {
+          "type": "string",
+          "description": "Plant cost center code",
+          "maxLength": 40
+        },
+        "dangerTagRequired": {
+          "type": "boolean",
+          "description": "Whether Danger Tag / LOTO isolation is required"
+        },
+        "dangerTagNumber": {
+          "type": "string",
+          "description": "Issued LOTO / Danger Tag identifier",
+          "maxLength": 50
+        },
+        "recipientDepartment": {
+          "type": "string",
+          "description": "Department receiving the maintenance work request",
+          "maxLength": 100
+        },
+        "originatingDepartment": {
+          "type": "string",
+          "description": "Department raising the work request",
+          "maxLength": 100
+        },
+        "originatedBy": {
+          "type": "string",
+          "description": "Originator full name",
+          "maxLength": 120
+        },
+        "originatedTime": {
+          "type": "string",
+          "description": "Time work request originated",
+          "maxLength": 30
+        },
+        "originatedSignature": {
+          "type": "string",
+          "description": "Originator sign-off string",
+          "maxLength": 120
+        },
+        "physicalSlipLogged": {
+          "type": "boolean",
+          "description": "Whether backed by a physical triplicate paper slip"
+        },
+        "requisitionStage": {
+          "type": "string",
+          "enum": ["Pending Acceptance", "Accepted", "In Progress", "Pending Spares", "Artisan Completed", "HOD Closed"],
+          "description": "Multi-stage works requisition approval and handback stage"
+        },
+        "assignedSupervisor": {
+          "type": "string",
+          "description": "Accepting maintenance supervisor",
+          "maxLength": 120
+        },
+        "acceptedAt": {
+          "type": "string",
+          "description": "ISO timestamp when supervisor accepted requisition",
+          "maxLength": 40
+        },
+        "acceptedBy": {
+          "type": "string",
+          "description": "Supervisor who accepted the requisition",
+          "maxLength": 120
+        },
+        "completedByArtisan": {
+          "type": "string",
+          "description": "Artisan who executed and handed back the job",
+          "maxLength": 120
+        },
+        "artisanSignature": {
+          "type": "string",
+          "description": "Artisan handback signature",
+          "maxLength": 120
+        },
+        "artisanHandbackNotes": {
+          "type": "string",
+          "description": "Artisan completion notes from physical slip",
+          "maxLength": 2000
+        },
+        "completionDate": {
+          "type": "string",
+          "description": "Completion date (YYYY-MM-DD)",
+          "maxLength": 20
+        },
+        "completionTime": {
+          "type": "string",
+          "description": "Completion time (HH:mm)",
+          "maxLength": 20
+        },
+        "completionHours": {
+          "type": "number",
+          "description": "Hours logged on final artisan handback"
+        },
+        "laborLogs": {
+          "type": "array",
+          "description": "Bounded labor entries (<= 200)"
+        },
+        "comments": {
+          "type": "array",
+          "description": "Bounded activity and audit chatter entries (<= 500)"
+        },
+        "sparesRequested": {
+          "type": "array",
+          "description": "Bounded spares requisition line items (<= 100)"
+        },
+        "shiftHandovers": {
+          "type": "array",
+          "description": "Bounded continuous shift handover records (<= 100)"
+        },
+        "hodSignedBy": {
+          "type": "string",
+          "description": "Engineering Manager / HOD who digitally signed off closure",
+          "maxLength": 120
+        },
+        "hodDigitalSignOff": {
+          "type": "object",
+          "description": "HOD digital closure attestation object"
+        },
+        "qcSignedBy": {
+          "type": "string",
+          "description": "Quality control verifier name",
+          "maxLength": 120
+        },
         "createdAt": {
           "type": "string",
-          "description": "Creation timestamp in ISO format"
+          "description": "Creation timestamp in ISO format",
+          "maxLength": 40
         },
         "updatedAt": {
           "type": "string",
-          "description": "Last update timestamp in ISO format"
+          "description": "Last update timestamp in ISO format",
+          "maxLength": 40
+        },
+        "workflowStage": {
+          "type": "string",
+          "enum": [
+            "SUBMITTED",
+            "ACCEPTED",
+            "IN_PROGRESS",
+            "WAITING_FOR_PARTS",
+            "WAITING_FOR_SHUTDOWN",
+            "WORK_COMPLETE",
+            "CLOSED",
+            "CANCELLED"
+          ],
+          "description": "Canonical 8-stage Phase 1 works requisition workflow stage"
+        },
+        "holdReason": {
+          "type": "string",
+          "description": "Deferral or hold reason for WAITING_FOR_PARTS or WAITING_FOR_SHUTDOWN",
+          "maxLength": 500
+        },
+        "statusHistory": {
+          "type": "array",
+          "description": "Bounded immutable audit trail of stage transitions (<= 200)"
+        },
+        "parentJobCardId": {
+          "type": "string",
+          "description": "Parent job card document ID for linked multi-department companion jobs",
+          "maxLength": 128
+        },
+        "parentJobCardNumber": {
+          "type": "string",
+          "description": "Parent job card display number e.g. JC-ENG-2026-001",
+          "maxLength": 50
+        },
+        "attachments": {
+          "type": "array",
+          "description": "Bounded compressed work-order photos and documents (<= 4 entries, <= 220 KB each)"
         }
       },
       "required": [
@@ -147,7 +338,7 @@
         },
         "role": {
           "type": "string",
-          "enum": ["Admin", "Supervisor", "Technician", "Operator", "Manager"],
+          "enum": ["Admin", "Supervisor", "Technician", "Operator", "Manager", "Storeman"],
           "description": "Role in the ERP hierarchy"
         }
       },
@@ -514,12 +705,60 @@
         "updatedAt": { "type": "string", "description": "Server timestamp" }
       },
       "required": ["category", "title", "description", "version", "items", "updatedBy", "updatedByUid", "updatedAt"]
+    },
+    "orgMasterData": {
+      "title": "Plant Organization Master Data Configuration",
+      "description": "Manager/Admin configurable plant departments, trades, shifts, and weekly standby roster",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "departments": { "type": "array" },
+        "trades": { "type": "array" },
+        "shifts": { "type": "array" },
+        "standbyRoster": { "type": "array" },
+        "version": { "type": "number" },
+        "updatedBy": { "type": "string", "maxLength": 120 },
+        "updatedByUid": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["id", "departments", "trades", "shifts", "standbyRoster", "version"]
+    },
+    "appNotification": {
+      "title": "Plant Workflow Notification",
+      "description": "Real-time persistent alert for new breakdowns, standby dispatches, workflow stage transitions, and HOD reviews",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "JOB_CARD_CREATED",
+            "JOB_CARD_EMERGENCY",
+            "JOB_CARD_ASSIGNED",
+            "JOB_CARD_HOLD",
+            "JOB_CARD_WORK_COMPLETE",
+            "JOB_CARD_CLOSED",
+            "COMPANION_JOB_CREATED"
+          ]
+        },
+        "title": { "type": "string", "maxLength": 120 },
+        "message": { "type": "string", "maxLength": 400 },
+        "severity": { "type": "string", "enum": ["INFO", "ACTION_REQUIRED", "EMERGENCY"] },
+        "jobCardId": { "type": "string", "maxLength": 128 },
+        "jobCardNumber": { "type": "string", "maxLength": 50 },
+        "department": { "type": "string", "maxLength": 100 },
+        "targetRoles": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 120 },
+        "createdByUid": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "maxLength": 40 },
+        "readByUids": { "type": "array" }
+      },
+      "required": ["type", "title", "message", "severity", "createdBy", "createdByUid", "createdAt", "readByUids"]
     }
   },
   "firestore": {
     "/jobCards/{jobCardId}": {
       "schema": "jobCard",
-      "description": "Job cards tracking maintenance work, labor hours, and progress notes"
+      "description": "Job cards tracking maintenance work, labor hours, attachments, and progress notes"
     },
     "/equipment/{equipmentId}": {
       "schema": "equipment",
@@ -560,6 +799,14 @@
     "/inspectionTemplates/{templateId}": {
       "schema": "inspectionTemplate",
       "description": "Engineering-admin managed inspection checklist templates keyed by category"
+    },
+    "/orgMasterData/{configId}": {
+      "schema": "orgMasterData",
+      "description": "Plant-wide configurable organization master data (plant-default)"
+    },
+    "/notifications/{notificationId}": {
+      "schema": "appNotification",
+      "description": "Real-time plant workflow notifications and read receipts"
     }
   }
 }

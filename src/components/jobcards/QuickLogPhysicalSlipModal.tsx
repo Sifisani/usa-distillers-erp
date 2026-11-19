@@ -21,11 +21,9 @@ import {
   JobCard
 } from '../../types';
 import {
-  TECHNICAL_TRADES_LIST,
-  SHIFTS_LIST,
-  getActiveStandbyRoster,
   getStaffByTrade
 } from '../../core/master-data/organization';
+import { useOrgMasterData } from '../../context/OrgMasterDataContext';
 
 interface QuickLogPhysicalSlipModalProps {
   isOpen: boolean;
@@ -42,6 +40,7 @@ export const QuickLogPhysicalSlipModal: React.FC<QuickLogPhysicalSlipModalProps>
   equipmentList,
   existingCardsCount
 }) => {
+  const { activeTrades, activeShifts } = useOrgMasterData();
   const [workOrderNumber, setWorkOrderNumber] = useState<string>(`${188500 + existingCardsCount}`);
   const [slipDate, setSlipDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [slipTime, setSlipTime] = useState<string>('11:30');
@@ -368,7 +367,7 @@ export const QuickLogPhysicalSlipModal: React.FC<QuickLogPhysicalSlipModalProps>
                   onChange={(e) => handleTradeChange(e.target.value as TechnicalTrade)}
                   className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-white font-bold text-slate-800"
                 >
-                  {TECHNICAL_TRADES_LIST.map((t) => (
+                  {activeTrades.map((t) => (
                     <option key={t.id} value={t.id}>{t.label}</option>
                   ))}
                 </select>
@@ -469,7 +468,7 @@ export const QuickLogPhysicalSlipModal: React.FC<QuickLogPhysicalSlipModalProps>
                     onChange={(e) => setAssignedShift(e.target.value as ShiftGroup)}
                     className="w-full text-xs px-2.5 py-1.5 border border-emerald-400 rounded bg-white font-medium"
                   >
-                    {SHIFTS_LIST.map((s) => (
+                    {activeShifts.map((s) => (
                       <option key={s.id} value={s.id}>{s.label}</option>
                     ))}
                   </select>

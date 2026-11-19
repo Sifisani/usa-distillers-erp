@@ -146,6 +146,9 @@ export interface JobCard {
   physicalSlipLogged?: boolean;
 
   // Supervisor & Manager Workflow
+  workflowStage?: JobCardWorkflowStage;
+  statusHistory?: StatusHistoryEntry[];
+  holdReason?: string;
   requisitionStage?: RequisitionStage;
   assignedSupervisor?: string;
   acceptedAt?: string;
@@ -164,6 +167,55 @@ export interface JobCard {
     notes?: string;
   };
   qcSignedBy?: string;
+
+  // Multi-Department Linked Work Orders (Parent / Companion Child Split)
+  parentJobCardId?: string;
+  parentJobCardNumber?: string;
+
+  // Bounded Photo / Document Attachments (<= 4 per Job Card)
+  attachments?: JobCardAttachment[];
+}
+
+export type JobCardAttachmentCategory =
+  | 'FAULT_PHOTO'
+  | 'REPAIRED_PHOTO'
+  | 'PAPER_SLIP_SCAN'
+  | 'DOCUMENT';
+
+export interface JobCardAttachment {
+  id: string;
+  name: string;
+  category: JobCardAttachmentCategory;
+  mimeType: string;
+  sizeBytes: number;
+  dataUrl: string;
+  uploadedBy: string;
+  uploadedByUid?: string;
+  uploadedAt: string;
+  caption?: string;
+}
+
+export type JobCardWorkflowStage =
+  | 'SUBMITTED'
+  | 'ACCEPTED'
+  | 'IN_PROGRESS'
+  | 'WAITING_FOR_PARTS'
+  | 'WAITING_FOR_SHUTDOWN'
+  | 'WORK_COMPLETE'
+  | 'CLOSED'
+  | 'CANCELLED';
+
+export interface StatusHistoryEntry {
+  id: string;
+  fromStage?: JobCardWorkflowStage;
+  toStage: JobCardWorkflowStage;
+  fromStatus?: JobCardStatus;
+  toStatus: JobCardStatus;
+  changedBy: string;
+  changedByUid?: string;
+  changedByRole?: string;
+  changedAt: string;
+  reason?: string;
 }
 
 export type RequisitionStage =
@@ -815,7 +867,7 @@ export interface UserProfile {
   email: string;
   displayName: string;
   department: string;
-  role: 'Admin' | 'Supervisor' | 'Technician' | 'Operator' | 'Manager';
+  role: 'Admin' | 'Supervisor' | 'Technician' | 'Operator' | 'Manager' | 'Storeman';
   title?: string;
   staffId?: string;
   level?: string;
@@ -875,3 +927,64 @@ export const DEPARTMENTS_BY_CATEGORY: DepartmentGroup[] = [
 export const ALL_DEPARTMENTS = DEPARTMENTS_BY_CATEGORY.flatMap(group => 
   group.departments.map(dept => `${group.category} - ${dept}`)
 );
+
+export interface OrgTradeConfigItem {
+  id: TechnicalTrade;
+  label: string;
+  crewType: string;
+  active: boolean;
+}
+
+export interface OrgShiftConfigItem {
+  id: ShiftGroup;
+  label: string;
+  timing: string;
+  active: boolean;
+}
+
+export interface OrgStandbyRosterItem {
+  trade: 'Electrician' | 'Boilermaker' | 'Welder';
+  supervisor: string;
+  onDutyName: string;
+  onDutyStaffId?: string;
+  backupName: string;
+  backupStaffId?: string;
+  cycle: string;
+}
+
+export interface OrgMasterDataConfig {
+  id: string;
+  departments: DepartmentGroup[];
+  trades: OrgTradeConfigItem[];
+  shifts: OrgShiftConfigItem[];
+  standbyRoster: OrgStandbyRosterItem[];
+  version: number;
+  updatedBy?: string;
+  updatedByUid?: string;
+  updatedAt?: string;
+}
+
+export type AppNotificationSeverity = 'INFO' | 'ACTION_REQUIRED' | 'EMERGENCY';
+
+export interface AppNotification {
+  id: string;
+  type:
+    | 'JOB_CARD_CREATED'
+    | 'JOB_CARD_EMERGENCY'
+    | 'JOB_CARD_ASSIGNED'
+    | 'JOB_CARD_HOLD'
+    | 'JOB_CARD_WORK_COMPLETE'
+    | 'JOB_CARD_CLOSED'
+    | 'COMPANION_JOB_CREATED';
+  title: string;
+  message: string;
+  severity: AppNotificationSeverity;
+  jobCardId?: string;
+  jobCardNumber?: string;
+  department?: string;
+  targetRoles?: UserProfile['role'][];
+  createdBy: string;
+  createdByUid: string;
+  createdAt: string;
+  readByUids: string[];
+}
