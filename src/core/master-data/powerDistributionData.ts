@@ -8,12 +8,26 @@
  */
 
 import {
-  FeederPanelId,
-  TransformerSource,
+  ElectricalAlertThresholds,
   ElectricalFeederNodeMeta,
+  ElectricalMeasurement,
   Equipment,
-  PowerDistributionNode
+  FeederPanelId,
+  JobCard,
+  LoadDataSource,
+  LogicalMccGroup,
+  MappingConfidence,
+  PowerConnection,
+  PowerDistributionNode,
+  TransformerSource
 } from '../../types';
+import {
+  BranchLoadContribution,
+  buildEffectivePowerEdges,
+  getDirectParentNodeIds,
+  solvePlantElectricalState
+} from '../electrical/topologySolver';
+import { DEFAULT_ELECTRICAL_THRESHOLDS } from '../electrical/loadCalculations';
 
 export const DEFAULT_POWER_NODES: PowerDistributionNode[] = [
   // =========================================================================
@@ -975,6 +989,141 @@ export const FEEDER_PANELS: ElectricalFeederNodeMeta[] = [
 ];
 
 /**
+ * Authoritative Logical MCC / Distribution Board Groupings
+ * Separates physical equipment from incoming breaker, internal 400V busbar, and outgoing cubicles.
+ */
+export const LOGICAL_MCC_GROUPS: LogicalMccGroup[] = [
+  {
+    id: 'GRP_MCC1',
+    panelId: 'MCC 1',
+    groupType: 'MCC',
+    incomingBreakerId: 'C8',
+    internalBusbarId: 'INT_BUS_MCC1',
+    internalBusbarLabel: 'MCC 1 Internal 400V Stillhouse Busbar',
+    nominalVoltage: '400 V 3Ø 50Hz',
+    busbarRatedAmps: 630
+  },
+  {
+    id: 'GRP_BLR2',
+    panelId: 'Boiler 2',
+    groupType: 'DB',
+    incomingBreakerId: 'C9',
+    internalBusbarId: 'INT_BUS_BLR2',
+    internalBusbarLabel: 'Boiler 2 Local DB Busbar',
+    nominalVoltage: '400 V 3Ø 50Hz',
+    busbarRatedAmps: 400
+  },
+  {
+    id: 'GRP_MCC4',
+    panelId: 'MCC 4',
+    groupType: 'MCC',
+    incomingBreakerId: 'C10',
+    internalBusbarId: 'INT_BUS_MCC4',
+    internalBusbarLabel: 'MCC 4 Internal 400V Fermentation Busbar',
+    nominalVoltage: '400 V 3Ø 50Hz',
+    busbarRatedAmps: 630
+  },
+  {
+    id: 'GRP_MCC2',
+    panelId: 'MCC 2',
+    groupType: 'MCC',
+    incomingBreakerId: 'C11',
+    internalBusbarId: 'INT_BUS_MCC2',
+    internalBusbarLabel: 'MCC 2 Internal 400V Auxiliaries Busbar',
+    nominalVoltage: '400 V 3Ø 50Hz',
+    busbarRatedAmps: 400
+  },
+  {
+    id: 'GRP_OLD_WTP',
+    panelId: 'Old Water Treatment Plant',
+    groupType: 'MCC',
+    incomingBreakerId: 'C18',
+    internalBusbarId: 'INT_BUS_OLD_WTP',
+    internalBusbarLabel: 'Old WTP 400V Distribution Busbar (via C12)',
+    nominalVoltage: '400 V 3Ø 50Hz',
+    busbarRatedAmps: 400
+  },
+  {
+    id: 'GRP_BATCH',
+    panelId: 'Batch Plant',
+    groupType: 'DB',
+    incomingBreakerId: 'C19',
+    internalBusbarId: 'INT_BUS_BATCH',
+    internalBusbarLabel: 'Batch Plant & CMS 400V DB Busbar (via C12)',
+    nominalVoltage: '400 V 3Ø 50Hz',
+    busbarRatedAmps: 250
+  },
+  {
+    id: 'GRP_DAM1',
+    panelId: 'Dam 1 (slops)',
+    groupType: 'DB',
+    incomingBreakerId: 'C20',
+    internalBusbarId: 'INT_BUS_DAM1',
+    internalBusbarLabel: 'Dam 1 (Slops) & Offloading 400V DB Busbar (via C12)',
+    nominalVoltage: '400 V 3Ø 50Hz',
+    busbarRatedAmps: 250
+  },
+  {
+    id: 'GRP_BLR1',
+    panelId: 'Boiler 1',
+    groupType: 'DB',
+    incomingBreakerId: 'C13',
+    internalBusbarId: 'INT_BUS_BLR1',
+    internalBusbarLabel: 'Boiler 1 Local DB Busbar',
+    nominalVoltage: '400 V 3Ø 50Hz',
+    busbarRatedAmps: 400
+  },
+  {
+    id: 'GRP_MCC3',
+    panelId: 'MCC 3',
+    groupType: 'MCC',
+    incomingBreakerId: 'C14',
+    internalBusbarId: 'INT_BUS_MCC3',
+    internalBusbarLabel: 'MCC 3 Internal 400V Cooling Towers Busbar',
+    nominalVoltage: '400 V 3Ø 50Hz',
+    busbarRatedAmps: 630
+  },
+  {
+    id: 'GRP_SUB_DB1',
+    panelId: 'Sub DB1 Compressors',
+    groupType: 'DB',
+    incomingBreakerId: 'C15',
+    internalBusbarId: 'INT_BUS_SUB_DB1',
+    internalBusbarLabel: 'Sub DB1 Compressors & Drying DB Busbar',
+    nominalVoltage: '400 V 3Ø 50Hz',
+    busbarRatedAmps: 400
+  },
+  {
+    id: 'GRP_BLR3',
+    panelId: 'Boiler 3',
+    groupType: 'DB',
+    incomingBreakerId: 'C16',
+    internalBusbarId: 'INT_BUS_BLR3',
+    internalBusbarLabel: 'Boiler 3 Local DB Busbar',
+    nominalVoltage: '400 V 3Ø 50Hz',
+    busbarRatedAmps: 630
+  },
+  {
+    id: 'GRP_NEW_WTP',
+    panelId: 'New Water Treatment Plant',
+    groupType: 'MCC',
+    incomingBreakerId: 'C17',
+    internalBusbarId: 'INT_BUS_NEW_WTP',
+    internalBusbarLabel: 'New WTP Internal 400V Control Busbar',
+    nominalVoltage: '400 V 3Ø 50Hz',
+    busbarRatedAmps: 400
+  }
+];
+
+export function getLogicalMccGroupForNode(nodeId: string): LogicalMccGroup | null {
+  return (
+    LOGICAL_MCC_GROUPS.find(
+      (g) => g.incomingBreakerId === nodeId || g.panelId === nodeId
+    ) || null
+  );
+}
+
+/**
  * Legacy panel name normalization map (v1 -> v2.0)
  */
 export function normalizeFeederPanelId(rawPanel?: string): FeederPanelId | null {
@@ -987,15 +1136,29 @@ export function normalizeFeederPanelId(rawPanel?: string): FeederPanelId | null 
 }
 
 /**
- * Deterministically maps any plant asset (from explicit feederPanel, plantArea, name, or code)
- * to its exact feeder panel, transformer, and breaker in the v2.0 SLD.
+ * Resolves any plant asset to its feeder panel, transformer, and breaker with mapping confidence.
+ * Preserves existing authoritative master-data rules without altering established assignments.
  */
-export function resolveEquipmentFeederInfo(eq: Partial<Equipment>): {
+export function resolveEquipmentFeederWithConfidence(eq: Partial<Equipment>): {
   feederPanel: FeederPanelId;
   transformerSource: TransformerSource;
   feederBreaker: string;
   breakerId: string;
+  confidence: MappingConfidence;
 } {
+  if (eq.feederNodeId) {
+    const byNode = FEEDER_PANELS.find(p => p.breakerId === eq.feederNodeId);
+    if (byNode) {
+      return {
+        feederPanel: byNode.id,
+        transformerSource: byNode.transformerSource,
+        feederBreaker: byNode.breakerCode,
+        breakerId: byNode.breakerId,
+        confidence: 'EXPLICIT'
+      };
+    }
+  }
+
   const normalizedExplicit = normalizeFeederPanelId(eq.feederPanel);
   if (normalizedExplicit) {
     const matched = FEEDER_PANELS.find(p => p.id === normalizedExplicit)!;
@@ -1003,7 +1166,8 @@ export function resolveEquipmentFeederInfo(eq: Partial<Equipment>): {
       feederPanel: matched.id,
       transformerSource: matched.transformerSource,
       feederBreaker: matched.breakerCode,
-      breakerId: matched.breakerId
+      breakerId: matched.breakerId,
+      confidence: 'EXPLICIT'
     };
   }
 
@@ -1013,22 +1177,46 @@ export function resolveEquipmentFeederInfo(eq: Partial<Equipment>): {
 
   // Boiler 1 -> C13 (Tx2)
   if (area === 'Boiler 1' || code.includes('BLR1') || name.includes('BOILER 1')) {
-    return { feederPanel: 'Boiler 1', transformerSource: 'Tx2', feederBreaker: 'C13', breakerId: 'C13' };
+    return {
+      feederPanel: 'Boiler 1',
+      transformerSource: 'Tx2',
+      feederBreaker: 'C13',
+      breakerId: 'C13',
+      confidence: area === 'Boiler 1' ? 'AREA_RULE' : 'NAME_HEURISTIC'
+    };
   }
 
   // Boiler 2 -> C9 (Tx1)
   if (area === 'Boiler 2' || code.includes('BLR2') || name.includes('BOILER 2')) {
-    return { feederPanel: 'Boiler 2', transformerSource: 'Tx1', feederBreaker: 'C9', breakerId: 'C9' };
+    return {
+      feederPanel: 'Boiler 2',
+      transformerSource: 'Tx1',
+      feederBreaker: 'C9',
+      breakerId: 'C9',
+      confidence: area === 'Boiler 2' ? 'AREA_RULE' : 'NAME_HEURISTIC'
+    };
   }
 
   // Boiler 3 -> C16 (Tx3)
   if (area === 'Boiler 3' || code.includes('BLR3') || name.includes('BOILER 3')) {
-    return { feederPanel: 'Boiler 3', transformerSource: 'Tx3', feederBreaker: 'C16', breakerId: 'C16' };
+    return {
+      feederPanel: 'Boiler 3',
+      transformerSource: 'Tx3',
+      feederBreaker: 'C16',
+      breakerId: 'C16',
+      confidence: area === 'Boiler 3' ? 'AREA_RULE' : 'NAME_HEURISTIC'
+    };
   }
 
-  // Water Treatment -> C18 Old Water Treatment Plant (per engineering confirmation: all existing WTP motors go to Old WTP)
+  // Water Treatment -> C18 Old Water Treatment Plant
   if (area === 'Water Treatment' || code.includes('WTP') || name.includes('WATER') || name.includes('RIVER')) {
-    return { feederPanel: 'Old Water Treatment Plant', transformerSource: 'Tx2', feederBreaker: 'C18 (via C12)', breakerId: 'C18' };
+    return {
+      feederPanel: 'Old Water Treatment Plant',
+      transformerSource: 'Tx2',
+      feederBreaker: 'C18 (via C12)',
+      breakerId: 'C18',
+      confidence: area === 'Water Treatment' ? 'AREA_RULE' : 'NAME_HEURISTIC'
+    };
   }
 
   // Distillation -> C8 MCC 1 (Tx1)
@@ -1041,7 +1229,13 @@ export function resolveEquipmentFeederInfo(eq: Partial<Equipment>): {
     name.includes('STILL') ||
     name.includes('WASH COLUMN')
   ) {
-    return { feederPanel: 'MCC 1', transformerSource: 'Tx1', feederBreaker: 'C8', breakerId: 'C8' };
+    return {
+      feederPanel: 'MCC 1',
+      transformerSource: 'Tx1',
+      feederBreaker: 'C8',
+      breakerId: 'C8',
+      confidence: (area === 'Distillation' || area === 'Distillation Fans') ? 'AREA_RULE' : 'NAME_HEURISTIC'
+    };
   }
 
   // Fermentation -> C10 MCC 4 (Tx1)
@@ -1052,7 +1246,13 @@ export function resolveEquipmentFeederInfo(eq: Partial<Equipment>): {
     name.includes('FERMENT') ||
     name.includes('YEAST')
   ) {
-    return { feederPanel: 'MCC 4', transformerSource: 'Tx1', feederBreaker: 'C10', breakerId: 'C10' };
+    return {
+      feederPanel: 'MCC 4',
+      transformerSource: 'Tx1',
+      feederBreaker: 'C10',
+      breakerId: 'C10',
+      confidence: (area === 'Fermentation' || area === 'Fermentation/Turbine Fans') ? 'AREA_RULE' : 'NAME_HEURISTIC'
+    };
   }
 
   // Cooling Towers -> C14 MCC 3 (Tx3)
@@ -1063,7 +1263,13 @@ export function resolveEquipmentFeederInfo(eq: Partial<Equipment>): {
     name.includes('RECTIFIER') ||
     name.includes('SPIRIT')
   ) {
-    return { feederPanel: 'MCC 3', transformerSource: 'Tx3', feederBreaker: 'C14', breakerId: 'C14' };
+    return {
+      feederPanel: 'MCC 3',
+      transformerSource: 'Tx3',
+      feederBreaker: 'C14',
+      breakerId: 'C14',
+      confidence: area === 'Cooling Towers' ? 'AREA_RULE' : 'NAME_HEURISTIC'
+    };
   }
 
   // Universal / Compressors -> C15 Sub DB1 Compressors (Tx3)
@@ -1073,7 +1279,13 @@ export function resolveEquipmentFeederInfo(eq: Partial<Equipment>): {
     name.includes('COMPRESSOR') ||
     name.includes('AIR DRYER')
   ) {
-    return { feederPanel: 'Sub DB1 Compressors', transformerSource: 'Tx3', feederBreaker: 'C15', breakerId: 'C15' };
+    return {
+      feederPanel: 'Sub DB1 Compressors',
+      transformerSource: 'Tx3',
+      feederBreaker: 'C15',
+      breakerId: 'C15',
+      confidence: area === 'Universal' ? 'AREA_RULE' : 'NAME_HEURISTIC'
+    };
   }
 
   // Green Tank / CMS Molasses -> C19 Batch Plant (Tx2)
@@ -1085,7 +1297,13 @@ export function resolveEquipmentFeederInfo(eq: Partial<Equipment>): {
     name.includes('GREEN TANK') ||
     name.includes('CMS')
   ) {
-    return { feederPanel: 'Batch Plant', transformerSource: 'Tx2', feederBreaker: 'C19 (via C12)', breakerId: 'C19' };
+    return {
+      feederPanel: 'Batch Plant',
+      transformerSource: 'Tx2',
+      feederBreaker: 'C19 (via C12)',
+      breakerId: 'C19',
+      confidence: (area === 'Green Tank' || area === 'CMS/Molasses Tank') ? 'AREA_RULE' : 'NAME_HEURISTIC'
+    };
   }
 
   // Molasses Dam 1 / Offloading -> C20 Dam 1 (slops) (Tx2)
@@ -1097,38 +1315,117 @@ export function resolveEquipmentFeederInfo(eq: Partial<Equipment>): {
     name.includes('DAM 1') ||
     name.includes('OFFLOADING')
   ) {
-    return { feederPanel: 'Dam 1 (slops)', transformerSource: 'Tx2', feederBreaker: 'C20 (via C12)', breakerId: 'C20' };
+    return {
+      feederPanel: 'Dam 1 (slops)',
+      transformerSource: 'Tx2',
+      feederBreaker: 'C20 (via C12)',
+      breakerId: 'C20',
+      confidence: (area === 'Molasses Dam 1' || area === 'Molasses Offloading Bay') ? 'AREA_RULE' : 'NAME_HEURISTIC'
+    };
   }
 
   // Fallback -> C11 MCC 2 (Tx2)
-  return { feederPanel: 'MCC 2', transformerSource: 'Tx2', feederBreaker: 'C11', breakerId: 'C11' };
+  return {
+    feederPanel: 'MCC 2',
+    transformerSource: 'Tx2',
+    feederBreaker: 'C11',
+    breakerId: 'C11',
+    confidence: 'UNASSIGNED'
+  };
+}
+
+/**
+ * Deterministically maps any plant asset (from explicit feederPanel, plantArea, name, or code)
+ * to its exact feeder panel, transformer, and breaker in the v2.0 SLD.
+ */
+export function resolveEquipmentFeederInfo(eq: Partial<Equipment>): {
+  feederPanel: FeederPanelId;
+  transformerSource: TransformerSource;
+  feederBreaker: string;
+  breakerId: string;
+} {
+  const { feederPanel, transformerSource, feederBreaker, breakerId } =
+    resolveEquipmentFeederWithConfidence(eq);
+  return { feederPanel, transformerSource, feederBreaker, breakerId };
 }
 
 export interface NodeLoadMetrics {
   nodeId: string;
   connectedEquipment: Equipment[];
   equipmentCount: number;
-  runningLoadAmps: number;      // Sum of active Operational motors' loadCurrentAmps (or rated fallback)
-  connectedRatedAmps: number;   // Sum of all motors' ratedCurrentAmps
-  effectiveDisplayAmps: number; // Manual measuredLoadAmps override if set, else runningLoadAmps
+  runningLoadAmps: number;      // Estimated operating current (respecting breaker state)
+  connectedRatedAmps: number;   // Sum of connected equipment nameplate FLC
+  connectedNameplateKva: number | null;
+  effectiveDisplayAmps: number; // Measured override if present, else estimated runningLoadAmps
   isMeasuredOverride: boolean;
-  totalKw: number;
+  displayDataSource: LoadDataSource;
+  totalKw: number;              // Installed nameplate kW (deduplicated downstream)
+  estimatedOperatingKva: number | null;
+  estimatedUtilizationPct: number | null;
+  nominalVoltageV: number;
+  ratedCapacityKva: number | null;
+  ratedCapacityAmps: number | null;
+  // Verified Field / Meter Readings (null when unrecorded — NEVER fabricated or 0)
+  measuredCurrentAmps: number | null;
+  measuredPhaseCurrents: { l1?: number; l2?: number; l3?: number } | null;
+  phaseImbalancePct: number | null;
+  measuredVoltageV: number | null;
+  measuredActivePowerKw: number | null;
+  measuredApparentPowerKva: number | null;
+  apparentPowerSource: LoadDataSource | null;
+  measuredReactivePowerKvar: number | null;
+  measuredPowerFactor: number | null;
+  measuredFrequencyHz: number | null;
+  measuredEnergyKwh: number | null;
+  measurementTimestamp: string | null;
+  measurementSource: 'MEASURED' | 'METERED' | null;
+  measuredUtilizationPct: number | null;
+  availableCapacityKva: number | null;
+  availableCapacityAmps: number | null;
+  measuredEquipmentCount: number;
+  partialMeasuredEquipmentAmps: number | null;
+  // Multi-source / Generator Bus Demand Separation
+  isSharedBusSource: boolean;
+  sharedBusDemandAmps: number | null;
+  sharedBusDemandKva: number | null;
+  sourceActualOutputAmps: number | null;
+  sourceActualOutputKw: number | null;
+  sourceActualOutputKva: number | null;
+  branchContributions: BranchLoadContribution[];
   operationalCount: number;
   maintenanceCount: number;
+  standbyCount: number;
   activeJobCards: number;
   utilizationPct: number | null;
 }
 
 /**
- * Computes electrical load (Amps & kW) for ANY node in the v2.0 hierarchy,
- * rolling up downstream leaf feeders to parent breakers (C12, C4, C5, C6, Tx1-Tx3, HV Bus).
+ * Computes electrical load & 3-phase monitoring metrics for ANY node in the plant hierarchy,
+ * delegating exclusively to the single solvePlantElectricalState() engine.
  */
 export function computeNodeLoadMetrics(
   node: PowerDistributionNode,
   allNodes: PowerDistributionNode[],
-  equipmentList: Equipment[]
+  equipmentList: Equipment[],
+  jobCards: JobCard[] = [],
+  connections: PowerConnection[] = [],
+  measurements: ElectricalMeasurement[] = []
 ): NodeLoadMetrics {
-  // Determine which FeederPanelIds roll up into this node
+  const solved = solvePlantElectricalState(
+    allNodes,
+    equipmentList,
+    jobCards,
+    (eq) => {
+      const info = resolveEquipmentFeederWithConfidence(eq);
+      return {
+        breakerId: info.breakerId,
+        confidence: info.confidence === 'UNASSIGNED' ? 'NAME_HEURISTIC' : info.confidence
+      };
+    },
+    connections,
+    measurements
+  );
+
   const getDescendantPanelIds = (targetId: string): FeederPanelId[] => {
     const target = allNodes.find(n => n.id === targetId);
     if (!target) return [];
@@ -1144,9 +1441,11 @@ export function computeNodeLoadMetrics(
         return ['MCC 1', 'Boiler 2', 'MCC 4'];
       case 'GEN_SET':
       case 'C7': {
-        // Gen set carries Tx1 MCC loads when C7 is CLOSED
         const c7 = allNodes.find(n => n.id === 'C7');
-        return c7?.operatingState === 'CLOSED' ? ['MCC 1', 'Boiler 2', 'MCC 4'] : [];
+        const gen = allNodes.find(n => n.id === 'GEN_SET');
+        return c7?.operatingState === 'CLOSED' && gen?.operatingState === 'CLOSED'
+          ? ['MCC 1', 'Boiler 2', 'MCC 4']
+          : [];
       }
       case 'C5':
       case 'TX2':
@@ -1165,8 +1464,23 @@ export function computeNodeLoadMetrics(
       case 'C3':
       case 'NEW_TURBINE':
         return FEEDER_PANELS.map(p => p.id);
-      default:
-        return [];
+      default: {
+        const childPanels: FeederPanelId[] = [];
+        const queue = [targetId];
+        const visited = new Set<string>();
+        while (queue.length > 0) {
+          const curr = queue.shift()!;
+          if (visited.has(curr)) continue;
+          visited.add(curr);
+          for (const n of allNodes) {
+            if (n.parentNodeId === curr) {
+              if (n.feederPanelId) childPanels.push(n.feederPanelId);
+              queue.push(n.id);
+            }
+          }
+        }
+        return childPanels;
+      }
     }
   };
 
@@ -1176,72 +1490,122 @@ export function computeNodeLoadMetrics(
     return panelIds.includes(resolved.feederPanel);
   });
 
-  let runningLoadAmps = 0;
-  let connectedRatedAmps = 0;
-  let totalKw = 0;
-  let operationalCount = 0;
-  let maintenanceCount = 0;
-  let activeJobCards = 0;
+  const nodeState = solved.nodeStates.get(node.id);
 
-  for (const eq of connectedEquipment) {
-    const rated = Number(eq.ratedCurrentAmps) || 0;
-    const load = Number(eq.loadCurrentAmps) || rated;
-    const kw = Number(eq.powerKw) || 0;
-
-    connectedRatedAmps += rated;
-    totalKw += kw;
-    activeJobCards += eq.activeJobCardsCount || 0;
-
-    if (eq.status === 'Operational') {
-      operationalCount++;
-      runningLoadAmps += load;
-    } else if (eq.status === 'Under Maintenance') {
-      maintenanceCount++;
-    }
+  if (!nodeState) {
+    return {
+      nodeId: node.id,
+      connectedEquipment,
+      equipmentCount: connectedEquipment.length,
+      runningLoadAmps: 0,
+      connectedRatedAmps: 0,
+      connectedNameplateKva: null,
+      effectiveDisplayAmps: 0,
+      isMeasuredOverride: false,
+      displayDataSource: 'ESTIMATED',
+      totalKw: 0,
+      estimatedOperatingKva: null,
+      estimatedUtilizationPct: null,
+      nominalVoltageV: node.nominalVoltageV || 400,
+      ratedCapacityKva: node.kva ?? null,
+      ratedCapacityAmps: node.ratedAmps ?? null,
+      measuredCurrentAmps: null,
+      measuredPhaseCurrents: null,
+      phaseImbalancePct: null,
+      measuredVoltageV: null,
+      measuredActivePowerKw: null,
+      measuredApparentPowerKva: null,
+      apparentPowerSource: null,
+      measuredReactivePowerKvar: null,
+      measuredPowerFactor: null,
+      measuredFrequencyHz: null,
+      measuredEnergyKwh: null,
+      measurementTimestamp: null,
+      measurementSource: null,
+      measuredUtilizationPct: null,
+      availableCapacityKva: null,
+      availableCapacityAmps: null,
+      measuredEquipmentCount: 0,
+      partialMeasuredEquipmentAmps: null,
+      isSharedBusSource: node.category === 'SOURCE',
+      sharedBusDemandAmps: null,
+      sharedBusDemandKva: null,
+      sourceActualOutputAmps: null,
+      sourceActualOutputKw: null,
+      sourceActualOutputKva: null,
+      branchContributions: [],
+      operationalCount: 0,
+      maintenanceCount: 0,
+      standbyCount: 0,
+      activeJobCards: 0,
+      utilizationPct: null
+    };
   }
-
-  // Scale HV primary current if inspecting 11kV transformer/fuse/breaker (~400V / 11000V ratio)
-  const isHvAmpsScale =
-    node.id === 'TX1_FUSE' ||
-    node.id === 'TX2_FUSE' ||
-    node.id === 'TX3_FUSE' ||
-    node.id === 'BUS_11KV' ||
-    node.id === 'C2' ||
-    node.id === 'C3' ||
-    node.id === 'NEW_TURBINE';
-
-  const scaledRunningAmps = isHvAmpsScale ? runningLoadAmps * (415 / 11000) : runningLoadAmps;
-  const scaledRatedAmps = isHvAmpsScale ? connectedRatedAmps * (415 / 11000) : connectedRatedAmps;
-
-  const isMeasuredOverride = typeof node.measuredLoadAmps === 'number' && !Number.isNaN(node.measuredLoadAmps);
-  const effectiveDisplayAmps = isMeasuredOverride
-    ? Number(node.measuredLoadAmps!.toFixed(1))
-    : Number(scaledRunningAmps.toFixed(1));
-
-  const utilizationPct =
-    node.ratedAmps && node.ratedAmps > 0
-      ? Math.min(999, Math.round((effectiveDisplayAmps / node.ratedAmps) * 100))
-      : null;
 
   return {
     nodeId: node.id,
     connectedEquipment,
     equipmentCount: connectedEquipment.length,
-    runningLoadAmps: Number(scaledRunningAmps.toFixed(1)),
-    connectedRatedAmps: Number(scaledRatedAmps.toFixed(1)),
-    effectiveDisplayAmps,
-    isMeasuredOverride,
-    totalKw: Number(totalKw.toFixed(1)),
-    operationalCount,
-    maintenanceCount,
-    activeJobCards,
-    utilizationPct
+    runningLoadAmps: nodeState.liveAmps,
+    connectedRatedAmps: nodeState.connectedRatedAmps,
+    connectedNameplateKva: nodeState.connectedNameplateKva,
+    effectiveDisplayAmps: nodeState.effectiveDisplayAmps,
+    isMeasuredOverride: nodeState.isMeasuredOverride,
+    displayDataSource: nodeState.displayDataSource,
+    totalKw: nodeState.connectedKw,
+    estimatedOperatingKva: nodeState.estimatedOperatingKva,
+    estimatedUtilizationPct: nodeState.estimatedUtilizationPct,
+    nominalVoltageV: nodeState.nominalVoltageV,
+    ratedCapacityKva: nodeState.ratedCapacityKva,
+    ratedCapacityAmps: nodeState.ratedCapacityAmps,
+    measuredCurrentAmps: nodeState.measuredCurrentAmps,
+    measuredPhaseCurrents: nodeState.measuredPhaseCurrents,
+    phaseImbalancePct: nodeState.phaseImbalancePct,
+    measuredVoltageV: nodeState.measuredVoltageV,
+    measuredActivePowerKw: nodeState.measuredActivePowerKw,
+    measuredApparentPowerKva: nodeState.measuredApparentPowerKva,
+    apparentPowerSource: nodeState.apparentPowerSource,
+    measuredReactivePowerKvar: nodeState.measuredReactivePowerKvar,
+    measuredPowerFactor: nodeState.measuredPowerFactor,
+    measuredFrequencyHz: nodeState.measuredFrequencyHz,
+    measuredEnergyKwh: nodeState.measuredEnergyKwh,
+    measurementTimestamp: nodeState.measurementTimestamp,
+    measurementSource: nodeState.measurementSource,
+    measuredUtilizationPct: nodeState.measuredUtilizationPct,
+    availableCapacityKva: nodeState.availableCapacityKva,
+    availableCapacityAmps: nodeState.availableCapacityAmps,
+    measuredEquipmentCount: nodeState.measuredEquipmentCount,
+    partialMeasuredEquipmentAmps: nodeState.partialMeasuredEquipmentAmps,
+    isSharedBusSource: nodeState.isSharedBusSource,
+    sharedBusDemandAmps: nodeState.sharedBusDemandAmps,
+    sharedBusDemandKva: nodeState.sharedBusDemandKva,
+    sourceActualOutputAmps: nodeState.sourceActualOutputAmps,
+    sourceActualOutputKw: nodeState.sourceActualOutputKw,
+    sourceActualOutputKva: nodeState.sourceActualOutputKva,
+    branchContributions: nodeState.branchContributions,
+    operationalCount: nodeState.operationalEquipmentCount,
+    maintenanceCount: nodeState.maintenanceEquipmentCount,
+    standbyCount: nodeState.standbyEquipmentCount,
+    activeJobCards:
+      jobCards.length > 0
+        ? nodeState.openJobCardsCount
+        : connectedEquipment.reduce((acc, eq) => acc + (eq.activeJobCardsCount || 0), 0),
+    utilizationPct: nodeState.utilizationPct
   };
 }
 
 export interface ElectricalHazardAlert {
   id: string;
   severity: 'CRITICAL' | 'HIGH' | 'WARNING';
+  metricCategory?:
+    | 'INTERLOCK'
+    | 'TRANSFORMER_LOADING'
+    | 'BREAKER_OVERLOAD'
+    | 'PHASE_IMBALANCE'
+    | 'ABNORMAL_VOLTAGE'
+    | 'POWER_FACTOR'
+    | 'MISSING_SPECS';
+  dataBasis?: LoadDataSource | 'SAFETY_INTERLOCK';
   title: string;
   message: string;
   affectedNodeIds: string[];
@@ -1249,17 +1613,33 @@ export interface ElectricalHazardAlert {
 }
 
 /**
- * Active Plant Safety & Engineering Interlock Watchdog.
- * Automatically flags:
- * 1. Missing C4 <-> C7 mechanical/electrical interlock (and CRITICAL FAULT if both CLOSED)
- * 2. Unrecorded breaker nameplates (C2, C8-C20)
- * 3. Overloaded breakers (>85% rated amps)
+ * Active Plant Safety, Load & Power Quality Watchdog.
+ * Explicitly distinguishes MEASURED/METERED-based alerts from ESTIMATED-based alerts.
  */
 export function evaluatePowerDistributionHazards(
   allNodes: PowerDistributionNode[],
-  equipmentList: Equipment[]
+  equipmentList: Equipment[],
+  jobCards: JobCard[] = [],
+  connections: PowerConnection[] = [],
+  measurements: ElectricalMeasurement[] = [],
+  thresholds: ElectricalAlertThresholds = DEFAULT_ELECTRICAL_THRESHOLDS
 ): ElectricalHazardAlert[] {
   const alerts: ElectricalHazardAlert[] = [];
+
+  const solved = solvePlantElectricalState(
+    allNodes,
+    equipmentList,
+    jobCards,
+    (eq) => {
+      const info = resolveEquipmentFeederWithConfidence(eq);
+      return {
+        breakerId: info.breakerId,
+        confidence: info.confidence === 'UNASSIGNED' ? 'NAME_HEURISTIC' : info.confidence
+      };
+    },
+    connections,
+    measurements
+  );
 
   const c4 = allNodes.find(n => n.id === 'C4');
   const c7 = allNodes.find(n => n.id === 'C7');
@@ -1272,6 +1652,8 @@ export function evaluatePowerDistributionHazards(
       alerts.push({
         id: 'HAZARD-C4-C7-SIMULTANEOUS-CLOSE',
         severity: 'CRITICAL',
+        metricCategory: 'INTERLOCK',
+        dataBasis: 'SAFETY_INTERLOCK',
         title: 'DANGER: C4 (Tx1) & C7 (GEN SET) BOTH CLOSED — UN-INTERLOCKED BUS!',
         message:
           'Tx1 Main Incomer C4 and Emergency Gen Set Breaker C7 are simultaneously CLOSED without a mechanical/electrical interlock. Immediate risk of out-of-phase parallel fault, transformer back-feed, and severe arc flash on Tx1 400V Busbar!',
@@ -1282,6 +1664,8 @@ export function evaluatePowerDistributionHazards(
       alerts.push({
         id: 'HAZARD-C4-C7-NO-INTERLOCK',
         severity: 'HIGH',
+        metricCategory: 'INTERLOCK',
+        dataBasis: 'SAFETY_INTERLOCK',
         title: 'HIGH-PRIORITY CORRECTION: C4 (Tx1) & C7 (Gen Set) Lack Changeover Interlock',
         message:
           'C4 (Chint 2500A) and C7 (ABB 1250A) operate independently on Tx1 400V Busbar. Electricians MUST visually verify C4 is OPEN before closing C7 (and vice versa) until a mechanical/Kirk-key interlock is installed.',
@@ -1291,24 +1675,131 @@ export function evaluatePowerDistributionHazards(
     }
   }
 
-  // Check overloaded breakers
   for (const node of allNodes) {
-    if (node.category === 'BREAKER' && node.operatingState === 'CLOSED' && node.ratedAmps) {
-      const metrics = computeNodeLoadMetrics(node, allNodes, equipmentList);
-      if (metrics.utilizationPct !== null && metrics.utilizationPct >= 85) {
+    const state = solved.nodeStates.get(node.id);
+    if (!state || node.operatingState === 'DECOMMISSIONED') continue;
+
+    // 1. High Transformer Loading (Measured kVA vs Estimated kVA)
+    if (node.category === 'TRANSFORMER' && node.operatingState === 'CLOSED' && state.ratedCapacityKva) {
+      if (
+        state.measuredUtilizationPct !== null &&
+        state.measuredUtilizationPct >= thresholds.transformerHighLoadPct
+      ) {
+        const basis = state.apparentPowerSource || state.measurementSource || 'MEASURED';
         alerts.push({
-          id: `HAZARD-OVERLOAD-${node.id}`,
-          severity: metrics.utilizationPct >= 100 ? 'CRITICAL' : 'HIGH',
-          title: `Breaker ${node.code} High Load (${metrics.utilizationPct}% of ${node.ratedAmps}A)`,
-          message: `${node.name} load (${metrics.effectiveDisplayAmps}A) is approaching/exceeding breaker rating (${node.ratedAmps}A).`,
+          id: `HAZARD-TX-LOAD-${node.id}`,
+          severity: state.measuredUtilizationPct >= thresholds.transformerCriticalLoadPct ? 'CRITICAL' : 'HIGH',
+          metricCategory: 'TRANSFORMER_LOADING',
+          dataBasis: basis,
+          title: `[${basis}] ${node.code} High Transformer Loading (${state.measuredUtilizationPct}% of ${state.ratedCapacityKva} kVA)`,
+          message: `${node.name} measured load is ${state.measuredApparentPowerKva} kVA (Available capacity: ${state.availableCapacityKva} kVA).`,
           affectedNodeIds: [node.id],
-          actionRequired: 'Verify load current with clamp meter and shed non-essential standby motors.'
+          actionRequired: 'Review phase currents and redistribute non-critical MCC feeders.'
+        });
+      } else if (
+        state.measuredUtilizationPct === null &&
+        state.estimatedUtilizationPct !== null &&
+        state.estimatedUtilizationPct >= thresholds.transformerHighLoadPct
+      ) {
+        alerts.push({
+          id: `HAZARD-TX-EST-LOAD-${node.id}`,
+          severity: state.estimatedUtilizationPct >= thresholds.transformerCriticalLoadPct ? 'HIGH' : 'WARNING',
+          metricCategory: 'TRANSFORMER_LOADING',
+          dataBasis: 'ESTIMATED',
+          title: `[ESTIMATED] ${node.code} Projected Loading ${state.estimatedUtilizationPct}% of ${state.ratedCapacityKva} kVA`,
+          message: `Connected equipment estimated operating demand is ~${state.estimatedOperatingKva} kVA. No direct panel meter reading recorded yet.`,
+          affectedNodeIds: [node.id],
+          actionRequired: 'Record clamp/meter reading on transformer secondary to confirm actual loading.'
         });
       }
     }
+
+    // 2. Breaker Overload (Measured vs Estimated)
+    if (node.category === 'BREAKER' && node.operatingState === 'CLOSED' && node.ratedAmps) {
+      if (state.measuredUtilizationPct !== null && state.measuredUtilizationPct >= thresholds.breakerWarningPct) {
+        const basis = state.measurementSource || 'MEASURED';
+        alerts.push({
+          id: `HAZARD-OVERLOAD-${node.id}`,
+          severity: state.measuredUtilizationPct >= thresholds.breakerCriticalPct ? 'CRITICAL' : 'HIGH',
+          metricCategory: 'BREAKER_OVERLOAD',
+          dataBasis: basis,
+          title: `[${basis}] Breaker ${node.code} High Load (${state.measuredUtilizationPct}% of ${node.ratedAmps}A)`,
+          message: `${node.name} measured current (${state.measuredCurrentAmps}A) exceeds ${thresholds.breakerWarningPct}% threshold.`,
+          affectedNodeIds: [node.id],
+          actionRequired: 'Inspect feeder thermal profile and shed non-essential standby motors.'
+        });
+      } else if (
+        state.measuredUtilizationPct === null &&
+        state.estimatedUtilizationPct !== null &&
+        state.estimatedUtilizationPct >= thresholds.breakerWarningPct
+      ) {
+        alerts.push({
+          id: `HAZARD-EST-OVERLOAD-${node.id}`,
+          severity: state.estimatedUtilizationPct >= thresholds.breakerCriticalPct ? 'HIGH' : 'WARNING',
+          metricCategory: 'BREAKER_OVERLOAD',
+          dataBasis: 'ESTIMATED',
+          title: `[ESTIMATED] Breaker ${node.code} Projected Load ${state.estimatedUtilizationPct}% (${state.liveAmps}A / ${node.ratedAmps}A)`,
+          message: `Estimated connected running load on ${node.name} is ${state.liveAmps}A against ${node.ratedAmps}A rating.`,
+          affectedNodeIds: [node.id],
+          actionRequired: 'Verify actual feeder current using clamp meter.'
+        });
+      }
+    }
+
+    // 3. Three-Phase Current Imbalance (strictly MEASURED/METERED)
+    if (
+      state.phaseImbalancePct !== null &&
+      state.phaseImbalancePct >= thresholds.phaseImbalanceWarnPct &&
+      state.measurementSource
+    ) {
+      alerts.push({
+        id: `HAZARD-IMBALANCE-${node.id}`,
+        severity: state.phaseImbalancePct >= thresholds.phaseImbalanceWarnPct * 1.5 ? 'HIGH' : 'WARNING',
+        metricCategory: 'PHASE_IMBALANCE',
+        dataBasis: state.measurementSource,
+        title: `[${state.measurementSource}] ${node.code} Phase Current Imbalance (${state.phaseImbalancePct}%)`,
+        message: `L1=${state.measuredPhaseCurrents?.l1 ?? '—'}A, L2=${state.measuredPhaseCurrents?.l2 ?? '—'}A, L3=${state.measuredPhaseCurrents?.l3 ?? '—'}A exceeds ${thresholds.phaseImbalanceWarnPct}% imbalance limit.`,
+        affectedNodeIds: [node.id],
+        actionRequired: 'Check single-phase control/lighting loads, loose lugs, or unbalanced motor winding.'
+      });
+    }
+
+    // 4. Abnormal Voltage (strictly MEASURED/METERED)
+    if (state.measuredVoltageV !== null && state.nominalVoltageV > 0 && state.measurementSource) {
+      const devPct = Math.abs((state.measuredVoltageV - state.nominalVoltageV) / state.nominalVoltageV) * 100;
+      if (devPct >= thresholds.voltageDeviationWarnPct) {
+        alerts.push({
+          id: `HAZARD-VOLTAGE-${node.id}`,
+          severity: devPct >= thresholds.voltageDeviationCriticalPct ? 'CRITICAL' : 'HIGH',
+          metricCategory: 'ABNORMAL_VOLTAGE',
+          dataBasis: state.measurementSource,
+          title: `[${state.measurementSource}] ${node.code} Abnormal Voltage (${state.measuredVoltageV}V vs ${state.nominalVoltageV}V nominal)`,
+          message: `Voltage deviation is ${devPct.toFixed(1)}% (${state.measuredVoltageV > state.nominalVoltageV ? 'Overvoltage' : 'Undervoltage'}).`,
+          affectedNodeIds: [node.id],
+          actionRequired: 'Inspect transformer tap setting, AVR, or upstream utility regulation.'
+        });
+      }
+    }
+
+    // 5. Poor Power Factor (strictly MEASURED/METERED)
+    if (
+      state.measuredPowerFactor !== null &&
+      state.measuredPowerFactor < thresholds.minPowerFactorWarn &&
+      state.measurementSource
+    ) {
+      alerts.push({
+        id: `HAZARD-PF-${node.id}`,
+        severity: state.measuredPowerFactor < 0.75 ? 'HIGH' : 'WARNING',
+        metricCategory: 'POWER_FACTOR',
+        dataBasis: state.measurementSource,
+        title: `[${state.measurementSource}] ${node.code} Poor Power Factor (PF ${state.measuredPowerFactor})`,
+        message: `Measured power factor (${state.measuredPowerFactor}) is below ${thresholds.minPowerFactorWarn} target threshold.`,
+        affectedNodeIds: [node.id],
+        actionRequired: 'Inspect capacitor bank stages and lightly loaded induction motors.'
+      });
+    }
   }
 
-  // Count unrecorded breaker nameplates
   const unrecordedBreakers = allNodes.filter(
     n => n.category === 'BREAKER' && (n.brand === 'Unrecorded' || n.ratedAmps === null)
   );
@@ -1316,6 +1807,8 @@ export function evaluatePowerDistributionHazards(
     alerts.push({
       id: 'INFO-UNRECORDED-BREAKERS',
       severity: 'WARNING',
+      metricCategory: 'MISSING_SPECS',
+      dataBasis: 'NAMEPLATE',
       title: `${unrecordedBreakers.length} Circuit Breakers Missing Nameplate Specs (${unrecordedBreakers.map(b => b.code).join(', ')})`,
       message:
         'Click any breaker to record its physical brand, model, frame type (ACB/MCCB/MCB), and Ampere rating from the switchboard door.',
@@ -1328,20 +1821,44 @@ export function evaluatePowerDistributionHazards(
 }
 
 /**
- * Returns upstream ancestor chain for breadcrumbs (e.g. 11KV BUSBAR -> Tx1 Fuse -> Tx1 -> C4 -> Tx1 MCC -> C8)
+ * Returns primary upstream ancestor chain for breadcrumbs (e.g. 11KV BUSBAR -> Tx1 Fuse -> Tx1 -> C4 -> Tx1 MCC -> C8)
+ * Multi-source connection aware while remaining deterministic on existing nodes.
  */
 export function getUpstreamChain(
   nodeId: string,
-  allNodes: PowerDistributionNode[]
+  allNodes: PowerDistributionNode[],
+  connections: PowerConnection[] = []
 ): PowerDistributionNode[] {
+  const byId = new Map(allNodes.map(n => [n.id, n]));
+  if (nodeId === 'GEN_SET') {
+    const gen = byId.get('GEN_SET');
+    return gen ? [gen] : [];
+  }
+  if (nodeId === 'C7') {
+    const gen = byId.get('GEN_SET');
+    const c7 = byId.get('C7');
+    return [gen, c7].filter(Boolean) as PowerDistributionNode[];
+  }
+  if (nodeId === 'BUS_11KV') {
+    const bus = byId.get('BUS_11KV');
+    return bus ? [bus] : [];
+  }
+
+  const edges = buildEffectivePowerEdges(allNodes, connections);
   const chain: PowerDistributionNode[] = [];
   const visited = new Set<string>();
-  let curr = allNodes.find(n => n.id === nodeId);
+  let curr = byId.get(nodeId);
 
   while (curr && !visited.has(curr.id)) {
     visited.add(curr.id);
     chain.unshift(curr);
-    curr = curr.parentNodeId ? allNodes.find(n => n.id === curr!.parentNodeId) : undefined;
+    if (curr.id === 'BUS_11KV') break;
+    let nextParentId = curr.parentNodeId;
+    if (!nextParentId || !byId.has(nextParentId)) {
+      const parentIds = getDirectParentNodeIds(curr.id, edges);
+      nextParentId = parentIds.find((pid) => !visited.has(pid));
+    }
+    curr = nextParentId ? byId.get(nextParentId) : undefined;
   }
   return chain;
 }

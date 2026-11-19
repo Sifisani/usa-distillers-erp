@@ -1,10 +1,57 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
-import firebaseConfig from '../firebase-applet-config.json';
+import defaultAppletConfig from '../firebase-applet-config.json';
 
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+const envApiKey = import.meta.env.VITE_FIREBASE_API_KEY?.trim();
+const envProjectId = import.meta.env.VITE_FIREBASE_PROJECT_ID?.trim();
+const envAppId = import.meta.env.VITE_FIREBASE_APP_ID?.trim();
+
+const hasEnvOverride = Boolean(envApiKey && envProjectId && envAppId);
+
+export const activeFirebaseConfig = hasEnvOverride
+  ? {
+      apiKey: envApiKey as string,
+      authDomain:
+        import.meta.env.VITE_FIREBASE_AUTH_DOMAIN?.trim() ||
+        `${envProjectId}.firebaseapp.com`,
+      projectId: envProjectId as string,
+      storageBucket:
+        import.meta.env.VITE_FIREBASE_STORAGE_BUCKET?.trim() ||
+        `${envProjectId}.firebasestorage.app`,
+      messagingSenderId:
+        import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID?.trim() || '',
+      appId: envAppId as string,
+      firestoreDatabaseId:
+        import.meta.env.VITE_FIREBASE_DATABASE_ID?.trim() || '(default)',
+    }
+  : defaultAppletConfig;
+
+const resolvedEnv = (
+  import.meta.env.VITE_APP_ENV?.trim() ||
+  (activeFirebaseConfig.projectId.toLowerCase().includes('prod')
+    ? 'production'
+    : 'development')
+) as 'development' | 'staging' | 'production';
+
+export const firebaseRuntimeInfo = {
+  projectId: activeFirebaseConfig.projectId,
+  databaseId: activeFirebaseConfig.firestoreDatabaseId || '(default)',
+  environment: resolvedEnv,
+  isProduction: resolvedEnv === 'production',
+  configSource: hasEnvOverride
+    ? ('env' as const)
+    : ('firebase-applet-config.json' as const),
+};
+
+const app = getApps().length > 0 ? getApp() : initializeApp(activeFirebaseConfig);
+
+export const db =
+  activeFirebaseConfig.firestoreDatabaseId &&
+  activeFirebaseConfig.firestoreDatabaseId !== '(default)'
+    ? getFirestore(app, activeFirebaseConfig.firestoreDatabaseId)
+    : getFirestore(app);
+
 export const auth = getAuth(app);
 
 export enum OperationType {
@@ -33,7 +80,11 @@ export interface FirestoreErrorInfo {
   };
 }
 
-export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+export function handleFirestoreError(
+  error: unknown,
+  operationType: OperationType,
+  path: string | null
+) {
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
@@ -42,13 +93,14 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
       emailVerified: auth.currentUser?.emailVerified,
       isAnonymous: auth.currentUser?.isAnonymous,
       tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData?.map(provider => ({
-        providerId: provider.providerId,
-        email: provider.email,
-      })) || []
+      providerInfo:
+        auth.currentUser?.providerData?.map((provider) => ({
+          providerId: provider.providerId,
+          email: provider.email,
+        })) || [],
     },
     operationType,
-    path
+    path,
   };
   console.error('Firestore Error: ', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));

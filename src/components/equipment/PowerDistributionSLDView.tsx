@@ -1,34 +1,92 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Zap,
-  AlertTriangle,
-  ShieldAlert,
+  Background,
+  BackgroundVariant,
+  Controls,
+  MiniMap,
+  ReactFlow,
+  ReactFlowProvider,
+  useReactFlow
+} from '@xyflow/react';
+import '@xyflow/react/dist/style.css';
+import {
+  ChevronDown,
+  ChevronRight,
+  ClipboardCheck,
+  Maximize2,
+  RotateCcw,
   Search,
+  Settings2,
+  ShieldAlert,
+  SlidersHorizontal,
   X,
-  CheckCircle2,
-  Edit3,
-  Power,
-  Activity
+  Zap
 } from 'lucide-react';
 import {
+  ElectricalAlertThresholds,
+  ElectricalInspection,
+  ElectricalInspectionReview,
+  ElectricalJobCardPrefill,
+  ElectricalMeasurement,
   Equipment,
-  JobCard,
+  EquipmentModificationLog,
+  EquipmentStatus,
   FeederPanelId,
+  InspectionAssetCategory,
+  InspectionReviewStatus,
+  InspectionTemplate,
+  JobCard,
+  PowerConnection,
   PowerDistributionNode,
-  EquipmentModificationLog
+  PowerEdgeRole,
+  PowerVoltageTier,
+  UserProfile
 } from '../../types';
 import {
   FEEDER_PANELS,
   computeNodeLoadMetrics,
-  evaluatePowerDistributionHazards
+  evaluatePowerDistributionHazards,
+  getUpstreamChain,
+  resolveEquipmentFeederWithConfidence
 } from '../../core/master-data/powerDistributionData';
+import {
+  CreateElectricalMeasurementInput,
+  DEFAULT_ELECTRICAL_THRESHOLDS
+} from '../../core/electrical/loadCalculations';
+import {
+  DEFAULT_INSPECTION_TEMPLATES,
+  SubmitInspectionInput,
+  indexLatestInspectionsByAsset
+} from '../../core/electrical/inspections';
+import { canManageInspectionTemplates } from '../../core/electrical/permissions';
+import {
+  getDirectChildNodeIds,
+  solvePlantElectricalState
+} from '../../core/electrical/topologySolver';
+import { buildSldDiagramElements } from '../../core/electrical/sldLayout';
+import { sldNodeTypes } from './sld/SldNodes';
+import { sldEdgeTypes } from './sld/SldEdges';
+import { SldInspectorDrawer } from './sld/SldInspectorDrawer';
+import { HierarchicalBranchPanel } from './sld/HierarchicalBranchPanel';
 import { PowerBranchDetailView } from './PowerBranchDetailView';
+import {
+  ElectricalInspectionModal,
+  InspectionTargetAsset,
+  buildInspectionTargetFromEquipment,
+  buildInspectionTargetFromNode
+} from './sld/ElectricalInspectionModal';
+import { InspectionDetailModal } from './sld/InspectionDetailModal';
+import { InspectionTemplatesModal } from './sld/InspectionTemplatesModal';
 
 interface PowerDistributionSLDViewProps {
   powerNodes: PowerDistributionNode[];
+  powerConnections?: PowerConnection[];
+  electricalMeasurements?: ElectricalMeasurement[];
   equipmentList: Equipment[];
   jobCards: JobCard[];
   currentUserName: string;
+  userRole?: UserProfile['role'] | null;
+  userEmail?: string | null;
   onUpdatePowerNode: (
     node: PowerDistributionNode,
     updates: Partial<PowerDistributionNode>,
@@ -52,39 +110,153 @@ interface PowerDistributionSLDViewProps {
       newValues?: Record<string, any>;
     }
   ) => Promise<void>;
+  onInspectUpdateEquipment?: (
+    equipment: Equipment,
+    inspection: {
+      loadCurrentAmps?: number;
+      status?: EquipmentStatus;
+      notes?: string;
+    },
+    audit: {
+      inspectedBy: string;
+      reason: string;
+    }
+  ) => Promise<void>;
+  onDeleteEquipment?: (equipment: Equipment) => Promise<void>;
+  onCreatePowerConnection?: (candidate: {
+    sourceNodeId: string;
+    targetNodeId: string;
+    voltageTier: PowerVoltageTier;
+    edgeRole: PowerEdgeRole;
+    label?: string;
+    reason: string;
+    createdBy: string;
+  }) => Promise<void>;
+  onDeletePowerConnection?: (connectionId: string) => Promise<void>;
+  onRecordElectricalMeasurement?: (
+    input: Omit<CreateElectricalMeasurementInput, 'recordedByUid'> & {
+      targetNode?: PowerDistributionNode;
+    }
+  ) => Promise<void>;
   onCreateEquipment?: (data: any) => Promise<void>;
   onSelectEquipment?: (equipment: Equipment) => void;
   onNewJobCardForEquipment?: (equipment: Equipment) => void;
+  electricalInspections?: ElectricalInspection[];
+  electricalInspectionReviews?: ElectricalInspectionReview[];
+  inspectionTemplates?: Record<InspectionAssetCategory, InspectionTemplate>;
+  onSubmitElectricalInspection?: (
+    payload: Omit<SubmitInspectionInput, 'technicianId' | 'technicianName' | 'technicianRole'>
+  ) => Promise<void>;
+  onSubmitInspectionReview?: (params: {
+    inspectionId: string;
+    assetId: string;
+    decision: Exclude<InspectionReviewStatus, 'PENDING_REVIEW'>;
+    reviewNotes: string;
+  }) => Promise<void>;
+  onSaveInspectionTemplate?: (template: InspectionTemplate) => Promise<void>;
+  onRaiseJobCardFromInspection?: (prefill: ElectricalJobCardPrefill) => void;
+  onSelectJobCard?: (card: JobCard) => void;
   initialSelectedPanel?: FeederPanelId | null;
+  initialFocusNodeId?: string | null;
 }
 
-export const PowerDistributionSLDView: React.FC<PowerDistributionSLDViewProps> = ({
+const DEFAULT_EXPANDED_BRANCHES = ['BUS_TX1', 'BUS_TX2', 'BUS_TX3', 'C12'];
+const THRESHOLDS_STORAGE_KEY = 'usa_distillers_elec_thresholds_v1';
+
+function loadStoredThresholds(): ElectricalAlertThresholds {
+  try {
+    const raw = typeof window !== 'undefined' ? window.localStorage.getItem(THRESHOLDS_STORAGE_KEY) : null;
+    if (!raw) return DEFAULT_ELECTRICAL_THRESHOLDS;
+    const parsed = JSON.parse(raw);
+    return {
+      transformerHighLoadPct: Number(parsed.transformerHighLoadPct) || DEFAULT_ELECTRICAL_THRESHOLDS.transformerHighLoadPct,
+      transformerCriticalLoadPct: Number(parsed.transformerCriticalLoadPct) || DEFAULT_ELECTRICAL_THRESHOLDS.transformerCriticalLoadPct,
+      breakerWarningPct: Number(parsed.breakerWarningPct) || DEFAULT_ELECTRICAL_THRESHOLDS.breakerWarningPct,
+      breakerCriticalPct: Number(parsed.breakerCriticalPct) || DEFAULT_ELECTRICAL_THRESHOLDS.breakerCriticalPct,
+      phaseImbalanceWarnPct: Number(parsed.phaseImbalanceWarnPct) || DEFAULT_ELECTRICAL_THRESHOLDS.phaseImbalanceWarnPct,
+      voltageDeviationWarnPct: Number(parsed.voltageDeviationWarnPct) || DEFAULT_ELECTRICAL_THRESHOLDS.voltageDeviationWarnPct,
+      voltageDeviationCriticalPct: Number(parsed.voltageDeviationCriticalPct) || DEFAULT_ELECTRICAL_THRESHOLDS.voltageDeviationCriticalPct,
+      minPowerFactorWarn: Number(parsed.minPowerFactorWarn) || DEFAULT_ELECTRICAL_THRESHOLDS.minPowerFactorWarn
+    };
+  } catch {
+    return DEFAULT_ELECTRICAL_THRESHOLDS;
+  }
+}
+
+const PowerDistributionSLDCanvas: React.FC<PowerDistributionSLDViewProps> = ({
   powerNodes,
+  powerConnections = [],
+  electricalMeasurements = [],
   equipmentList,
   jobCards,
   currentUserName,
+  userRole,
+  userEmail,
   onUpdatePowerNode,
   onModifyEquipment,
+  onInspectUpdateEquipment,
+  onDeleteEquipment,
+  onCreatePowerConnection,
+  onDeletePowerConnection,
+  onRecordElectricalMeasurement,
   onCreateEquipment,
   onSelectEquipment,
   onNewJobCardForEquipment,
-  initialSelectedPanel = null
+  electricalInspections = [],
+  electricalInspectionReviews = [],
+  inspectionTemplates = DEFAULT_INSPECTION_TEMPLATES,
+  onSubmitElectricalInspection,
+  onSubmitInspectionReview,
+  onSaveInspectionTemplate,
+  onRaiseJobCardFromInspection,
+  onSelectJobCard,
+  initialSelectedPanel = null,
+  initialFocusNodeId = null
 }) => {
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(() => {
+  const { fitView } = useReactFlow();
+  const canManageTemplates = canManageInspectionTemplates(userRole, userEmail);
+
+  const [inspectedNodeId, setInspectedNodeId] = useState<string | null>(() => {
     if (!initialSelectedPanel) return null;
     const panelMeta = FEEDER_PANELS.find(p => p.id === initialSelectedPanel);
     return panelMeta ? panelMeta.breakerId : null;
   });
+  const [expandedHierarchyNodeId, setExpandedHierarchyNodeId] = useState<string | null>(null);
+  const [branchWorkspaceNodeId, setBranchWorkspaceNodeId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [showHazardModal, setShowHazardModal] = useState(false);
+  const [showThresholdsModal, setShowThresholdsModal] = useState(false);
+  const [showTemplatesModal, setShowTemplatesModal] = useState(false);
+  const [inspectionDetailTarget, setInspectionDetailTarget] = useState<InspectionTargetAsset | null>(null);
+  const [inspectionFormTarget, setInspectionFormTarget] = useState<InspectionTargetAsset | null>(null);
+  const [correctsInspection, setCorrectsInspection] = useState<ElectricalInspection | null>(null);
+  const [thresholds, setThresholds] = useState<ElectricalAlertThresholds>(loadStoredThresholds);
+  const [draftThresholds, setDraftThresholds] = useState<ElectricalAlertThresholds>(thresholds);
 
-  // Sync if initialSelectedPanel changes from parent Grid/Table jump
-  useEffect(() => {
-    if (initialSelectedPanel) {
-      const panelMeta = FEEDER_PANELS.find(p => p.id === initialSelectedPanel);
-      if (panelMeta) setSelectedNodeId(panelMeta.breakerId);
-    }
-  }, [initialSelectedPanel]);
+  const [expandedBranchIds, setExpandedBranchIds] = useState<Set<string>>(
+    () => new Set(DEFAULT_EXPANDED_BRANCHES)
+  );
+  const [expandedPanelIds, setExpandedPanelIds] = useState<Set<FeederPanelId>>(
+    () => new Set()
+  );
+
+  const conditionSummaries = useMemo(
+    () => indexLatestInspectionsByAsset(electricalInspections, electricalInspectionReviews),
+    [electricalInspections, electricalInspectionReviews]
+  );
+
+  const conditionStats = useMemo(() => {
+    let healthy = 0;
+    let attention = 0;
+    let fault = 0;
+    powerNodes.forEach((n) => {
+      const cond = conditionSummaries.get(n.id)?.condition;
+      if (cond === 'HEALTHY') healthy += 1;
+      else if (cond === 'ATTENTION_REQUIRED' || cond === 'UNDER_MAINTENANCE' || cond === 'ISOLATED') attention += 1;
+      else if (cond === 'FAULT_DETECTED') fault += 1;
+    });
+    return { healthy, attention, fault };
+  }, [powerNodes, conditionSummaries]);
 
   const nodeMap = useMemo(() => {
     const map = new Map<string, PowerDistributionNode>();
@@ -92,17 +264,36 @@ export const PowerDistributionSLDView: React.FC<PowerDistributionSLDViewProps> =
     return map;
   }, [powerNodes]);
 
-  const metricsMap = useMemo(() => {
-    const map = new Map<string, ReturnType<typeof computeNodeLoadMetrics>>();
-    powerNodes.forEach(n => {
-      map.set(n.id, computeNodeLoadMetrics(n, powerNodes, equipmentList));
-    });
-    return map;
-  }, [powerNodes, equipmentList]);
+  const solved = useMemo(
+    () =>
+      solvePlantElectricalState(
+        powerNodes,
+        equipmentList,
+        jobCards,
+        (eq) => {
+          const info = resolveEquipmentFeederWithConfidence(eq);
+          return {
+            breakerId: info.breakerId,
+            confidence: info.confidence === 'UNASSIGNED' ? 'NAME_HEURISTIC' : info.confidence
+          };
+        },
+        powerConnections,
+        electricalMeasurements
+      ),
+    [powerNodes, equipmentList, jobCards, powerConnections, electricalMeasurements]
+  );
 
   const hazards = useMemo(
-    () => evaluatePowerDistributionHazards(powerNodes, equipmentList),
-    [powerNodes, equipmentList]
+    () =>
+      evaluatePowerDistributionHazards(
+        powerNodes,
+        equipmentList,
+        jobCards,
+        powerConnections,
+        electricalMeasurements,
+        thresholds
+      ),
+    [powerNodes, equipmentList, jobCards, powerConnections, electricalMeasurements, thresholds]
   );
 
   const criticalAndHighHazards = useMemo(
@@ -110,265 +301,434 @@ export const PowerDistributionSLDView: React.FC<PowerDistributionSLDViewProps> =
     [hazards]
   );
 
-  const hvMetrics = metricsMap.get('BUS_11KV');
+  const handleToggleBranch = useCallback((nodeId: string) => {
+    setExpandedBranchIds(prev => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) {
+        next.delete(nodeId);
+      } else {
+        next.add(nodeId);
+      }
+      return next;
+    });
+  }, []);
 
-  const matchesSearch = (nodeId: string): boolean => {
-    if (!searchQuery.trim()) return true;
-    const q = searchQuery.toLowerCase();
-    const node = nodeMap.get(nodeId);
-    const metrics = metricsMap.get(nodeId);
-    if (!node) return false;
+  const handleTogglePanelLoads = useCallback((panelId: FeederPanelId) => {
+    setExpandedPanelIds(prev => {
+      const next = new Set(prev);
+      if (next.has(panelId)) {
+        next.delete(panelId);
+      } else {
+        next.add(panelId);
+      }
+      return next;
+    });
+  }, []);
 
-    const hitNode =
-      node.code.toLowerCase().includes(q) ||
-      node.name.toLowerCase().includes(q) ||
-      node.brand.toLowerCase().includes(q) ||
-      node.model.toLowerCase().includes(q);
-    const hitMotor = metrics?.connectedEquipment.some(
-      eq => eq.name.toLowerCase().includes(q) || eq.code.toLowerCase().includes(q)
-    );
-    return Boolean(hitNode || hitMotor);
-  };
+  const handleExpandHierarchyNode = useCallback((nodeId: string) => {
+    setExpandedHierarchyNodeId(prev => {
+      const next = prev === nodeId ? null : nodeId;
+      if (next) {
+        setInspectedNodeId(next);
+        setExpandedBranchIds(branchSet => {
+          const updated = new Set(branchSet);
+          if (['C7', 'GEN_SET', 'C8', 'C9', 'C10'].includes(next)) updated.add('BUS_TX1');
+          if (['C11', 'C12', 'C13', 'C18', 'C19', 'C20'].includes(next)) updated.add('BUS_TX2');
+          if (['C18', 'C19', 'C20'].includes(next)) updated.add('C12');
+          if (['C14', 'C15', 'C16', 'C17'].includes(next)) updated.add('BUS_TX3');
+          return updated;
+        });
+      }
+      return next;
+    });
+  }, []);
 
-  // If user clicked any node, render the dedicated full-width Branch Page
-  const activeNode = selectedNodeId ? nodeMap.get(selectedNodeId) || null : null;
-  if (activeNode) {
-    return (
-      <PowerBranchDetailView
-        node={activeNode}
-        allNodes={powerNodes}
+  const handleExpandAll = useCallback(() => {
+    setExpandedBranchIds(new Set(DEFAULT_EXPANDED_BRANCHES));
+    setExpandedPanelIds(new Set(FEEDER_PANELS.map(p => p.id)));
+  }, []);
+
+  const handleCollapseLoads = useCallback(() => {
+    setExpandedPanelIds(new Set());
+  }, []);
+
+  const handleOpenNodeCondition = useCallback(
+    (nodeId: string) => {
+      const targetNode = nodeMap.get(nodeId);
+      if (!targetNode) return;
+      setInspectionDetailTarget(buildInspectionTargetFromNode(targetNode));
+    },
+    [nodeMap]
+  );
+
+  const handleOpenEquipmentCondition = useCallback((equipment: Equipment) => {
+    setInspectionDetailTarget(buildInspectionTargetFromEquipment(equipment));
+  }, []);
+
+  const handleRaiseJobCard = useCallback(
+    (prefill: ElectricalJobCardPrefill) => {
+      setInspectionDetailTarget(null);
+      if (onRaiseJobCardFromInspection) {
+        onRaiseJobCardFromInspection(prefill);
+      } else if (onNewJobCardForEquipment && prefill.equipmentId) {
+        const eq = equipmentList.find((item) => item.id === prefill.equipmentId);
+        if (eq) onNewJobCardForEquipment(eq);
+      }
+    },
+    [onRaiseJobCardFromInspection, onNewJobCardForEquipment, equipmentList]
+  );
+
+  const { nodes: rfNodes, edges: rfEdges, matchedNodeIds } = useMemo(
+    () =>
+      buildSldDiagramElements({
+        powerNodes,
+        solved,
+        equipmentList,
+        jobCards,
+        conditionSummaries,
+        selectedNodeId: inspectedNodeId,
+        expandedHierarchyNodeId,
+        searchQuery,
+        expandedBranchIds,
+        expandedPanelIds,
+        onSelectNode: (id) => setInspectedNodeId(id),
+        onToggleBranch: handleToggleBranch,
+        onTogglePanelLoads: handleTogglePanelLoads,
+        onExpandHierarchyNode: handleExpandHierarchyNode,
+        onInspectEquipment: onSelectEquipment,
+        onOpenNodeCondition: handleOpenNodeCondition,
+        onOpenEquipmentCondition: handleOpenEquipmentCondition,
+        onNewJobCardForEquipment
+      }),
+    [
+      powerNodes,
+      solved,
+      equipmentList,
+      jobCards,
+      conditionSummaries,
+      inspectedNodeId,
+      expandedHierarchyNodeId,
+      searchQuery,
+      expandedBranchIds,
+      expandedPanelIds,
+      handleToggleBranch,
+      handleTogglePanelLoads,
+      handleExpandHierarchyNode,
+      onSelectEquipment,
+      handleOpenNodeCondition,
+      handleOpenEquipmentCondition,
+      onNewJobCardForEquipment
+    ]
+  );
+
+  // Sync when jumping into SLD from Grid/Table "Locate in SLD"
+  useEffect(() => {
+    if (!initialSelectedPanel) return;
+    const panelMeta = FEEDER_PANELS.find(p => p.id === initialSelectedPanel);
+    if (!panelMeta) return;
+
+    setExpandedBranchIds(new Set(DEFAULT_EXPANDED_BRANCHES));
+    setExpandedPanelIds(prev => {
+      const next = new Set(prev);
+      next.add(panelMeta.id);
+      return next;
+    });
+    setInspectedNodeId(panelMeta.breakerId);
+    setBranchWorkspaceNodeId(null);
+
+    const timer = setTimeout(() => {
+      fitView({
+        nodes: [{ id: panelMeta.breakerId }, { id: `mcc-${panelMeta.id}` }],
+        duration: 450,
+        padding: 0.45
+      });
+    }, 120);
+    return () => clearTimeout(timer);
+  }, [initialSelectedPanel, fitView]);
+
+  // Sync when focusing a specific node from Workspace Summary / Alerts / Inspections
+  useEffect(() => {
+    if (!initialFocusNodeId) return;
+    setInspectedNodeId(initialFocusNodeId);
+    setBranchWorkspaceNodeId(null);
+    const timer = setTimeout(() => {
+      fitView({
+        nodes: [{ id: initialFocusNodeId }],
+        duration: 400,
+        padding: 0.55
+      });
+    }, 120);
+    return () => clearTimeout(timer);
+  }, [initialFocusNodeId, fitView]);
+
+  // Auto-focus first search match on the diagram
+  useEffect(() => {
+    if (!searchQuery.trim() || matchedNodeIds.length === 0) return;
+    const timer = setTimeout(() => {
+      fitView({
+        nodes: matchedNodeIds.slice(0, 4).map(id => ({ id })),
+        duration: 400,
+        padding: 0.4
+      });
+    }, 180);
+    return () => clearTimeout(timer);
+  }, [searchQuery, matchedNodeIds, fitView]);
+
+  // Re-fit diagram cleanly when returning from full branch workspace
+  const handleBackFromWorkspace = useCallback(() => {
+    setBranchWorkspaceNodeId(null);
+    setTimeout(() => {
+      fitView({ duration: 300, padding: 0.08 });
+    }, 80);
+  }, [fitView]);
+
+  // Render dedicated full-page branch editor if requested
+  const activeWorkspaceNode = branchWorkspaceNodeId
+    ? nodeMap.get(branchWorkspaceNodeId) || null
+    : null;
+
+  const inspectedNode = inspectedNodeId ? nodeMap.get(inspectedNodeId) || null : null;
+  const expandedHierarchyNode = expandedHierarchyNodeId
+    ? nodeMap.get(expandedHierarchyNodeId) || null
+    : null;
+  const inspectedMetrics = inspectedNode
+    ? computeNodeLoadMetrics(
+        inspectedNode,
+        powerNodes,
+        equipmentList,
+        jobCards,
+        powerConnections,
+        electricalMeasurements
+      )
+    : null;
+  const inspectedUpstream = inspectedNode
+    ? getUpstreamChain(inspectedNode.id, powerNodes, powerConnections)
+    : [];
+  const inspectedChildren = useMemo(() => {
+    if (!inspectedNode) return [];
+    const childIds = getDirectChildNodeIds(inspectedNode.id, solved.edges);
+    if (childIds.length > 0) {
+      return childIds
+        .map(id => nodeMap.get(id))
+        .filter((n): n is PowerDistributionNode => Boolean(n));
+    }
+    return powerNodes.filter(n => n.parentNodeId === inspectedNode.id);
+  }, [inspectedNode, powerNodes, solved.edges, nodeMap]);
+  const inspectedHazards = inspectedNode
+    ? hazards.filter(h => h.affectedNodeIds.includes(inspectedNode.id))
+    : [];
+
+  const bus11kVState = solved.nodeStates.get('BUS_11KV');
+
+  const inspectionModals = (
+    <>
+      <InspectionDetailModal
+        isOpen={Boolean(inspectionDetailTarget)}
+        target={inspectionDetailTarget}
+        summary={
+          inspectionDetailTarget
+            ? conditionSummaries.get(inspectionDetailTarget.assetId) || null
+            : null
+        }
+        allReviews={electricalInspectionReviews}
         equipmentList={equipmentList}
         jobCards={jobCards}
-        hazards={hazards}
         currentUserName={currentUserName}
-        onBackToOverview={() => setSelectedNodeId(null)}
-        onNavigateToNode={(id) => setSelectedNodeId(id)}
-        onUpdatePowerNode={onUpdatePowerNode}
-        onModifyEquipment={onModifyEquipment}
-        onCreateEquipment={onCreateEquipment}
-        onNewJobCardForEquipment={onNewJobCardForEquipment}
-        onInspectEquipment={onSelectEquipment}
+        userRole={userRole}
+        userEmail={userEmail}
+        onClose={() => setInspectionDetailTarget(null)}
+        onStartNewInspection={(target) => {
+          setCorrectsInspection(null);
+          setInspectionFormTarget(target);
+        }}
+        onStartAmendment={(target, insp) => {
+          setCorrectsInspection(insp);
+          setInspectionFormTarget(target);
+        }}
+        onSubmitReview={async (params) => {
+          if (onSubmitInspectionReview) {
+            await onSubmitInspectionReview(params);
+          }
+        }}
+        onRaiseJobCard={handleRaiseJobCard}
       />
+
+      <ElectricalInspectionModal
+        isOpen={Boolean(inspectionFormTarget)}
+        target={inspectionFormTarget}
+        templates={inspectionTemplates}
+        currentUserName={currentUserName}
+        userRole={userRole}
+        userEmail={userEmail}
+        correctsInspection={correctsInspection}
+        onClose={() => {
+          setInspectionFormTarget(null);
+          setCorrectsInspection(null);
+        }}
+        onSubmitInspection={async (payload) => {
+          if (onSubmitElectricalInspection) {
+            await onSubmitElectricalInspection(payload);
+          }
+        }}
+      />
+
+      <InspectionTemplatesModal
+        isOpen={showTemplatesModal}
+        templates={inspectionTemplates}
+        userRole={userRole}
+        userEmail={userEmail}
+        onClose={() => setShowTemplatesModal(false)}
+        onSaveTemplate={async (template) => {
+          if (onSaveInspectionTemplate) {
+            await onSaveInspectionTemplate(template);
+          }
+        }}
+      />
+    </>
+  );
+
+  if (activeWorkspaceNode) {
+    return (
+      <>
+        <PowerBranchDetailView
+          node={activeWorkspaceNode}
+          allNodes={powerNodes}
+          powerConnections={powerConnections}
+          electricalMeasurements={electricalMeasurements}
+          equipmentList={equipmentList}
+          jobCards={jobCards}
+          hazards={hazards}
+          currentUserName={currentUserName}
+          userRole={userRole}
+          userEmail={userEmail}
+          onBackToOverview={handleBackFromWorkspace}
+          onNavigateToNode={(id) => {
+            setBranchWorkspaceNodeId(id);
+            setInspectedNodeId(id);
+          }}
+          onUpdatePowerNode={onUpdatePowerNode}
+          onModifyEquipment={onModifyEquipment}
+          onInspectUpdateEquipment={onInspectUpdateEquipment}
+          onDeleteEquipment={onDeleteEquipment}
+          onCreatePowerConnection={onCreatePowerConnection}
+          onDeletePowerConnection={onDeletePowerConnection}
+          onRecordElectricalMeasurement={onRecordElectricalMeasurement}
+          onCreateEquipment={onCreateEquipment}
+          onNewJobCardForEquipment={onNewJobCardForEquipment}
+          onInspectEquipment={onSelectEquipment}
+          conditionSummaries={conditionSummaries}
+          onOpenNodeCondition={handleOpenNodeCondition}
+          onOpenEquipmentCondition={handleOpenEquipmentCondition}
+        />
+        {inspectionModals}
+      </>
     );
   }
 
-  // Helper to render compact circuit breaker card matching the Block Diagram style
-  const renderBreakerChip = (
-    nodeId: string,
-    opts?: {
-      subLabel?: string;
-      compact?: boolean;
-      highlightDanger?: boolean;
-    }
-  ) => {
-    const node = nodeMap.get(nodeId);
-    const metrics = metricsMap.get(nodeId);
-    if (!node) return null;
-
-    const isDimmed = searchQuery.trim() !== '' && !matchesSearch(nodeId);
-    const isDecomm = node.operatingState === 'DECOMMISSIONED';
-    const isOpen = node.operatingState === 'OPEN';
-    const isTripped = node.operatingState === 'TRIPPED';
-    const hasMaint = (metrics?.maintenanceCount || 0) > 0;
-    const isUnrecorded = node.brand === 'Unrecorded' || node.ratedAmps === null;
-    const isHazard = opts?.highlightDanger || node.interlockStatus === 'NONE_HAZARD';
-
-    const stateDot = isDecomm
-      ? 'bg-slate-400'
-      : isTripped
-      ? 'bg-red-600 animate-ping'
-      : isOpen
-      ? 'bg-amber-400'
-      : 'bg-emerald-500';
-
-    const breakerSpecLine =
-      node.brand === 'Unrecorded'
-        ? 'Nameplate Unrecorded'
-        : `${node.brand}${node.model && node.model !== 'Nameplate Unrecorded' ? ` ${node.model}` : ''}`;
-
-    const typeSizeLine = [
-      node.breakerType !== 'Unrecorded' ? node.breakerType : null,
-      node.ratedAmps ? `${node.ratedAmps}A` : 'Size ?'
-    ]
-      .filter(Boolean)
-      .join(' • ');
-
-    return (
-      <button
-        key={node.id}
-        onClick={() => setSelectedNodeId(node.id)}
-        title={`Click to open ${node.name} branch page & edit specs`}
-        className={`group text-left rounded-lg border transition-all cursor-pointer relative ${
-          opts?.compact ? 'p-1.5' : 'p-2'
-        } ${
-          isDimmed ? 'opacity-25' : 'opacity-100'
-        } ${
-          isDecomm
-            ? 'bg-rose-50/50 border-rose-200 hover:border-rose-400'
-            : isHazard
-            ? 'bg-amber-50/90 border-amber-400 hover:border-red-500 shadow-2xs'
-            : 'bg-white border-slate-300 hover:border-[#714B67] hover:shadow-sm'
-        }`}
-      >
-        {/* Top Row: Circuit ID + State + Maintenance Alert */}
-        <div className="flex items-center justify-between gap-1">
-          <div className="flex items-center gap-1 min-w-0">
-            <span className={`w-2 h-2 rounded-full shrink-0 ${stateDot}`} />
-            <span className="font-mono text-[11px] font-black text-slate-900 truncate">
-              {node.code}
-            </span>
-          </div>
-          <div className="flex items-center gap-1 shrink-0">
-            {isHazard && (
-              <ShieldAlert className="w-3 h-3 text-red-600" aria-label="No Interlock Hazard" />
-            )}
-            {hasMaint && (
-              <span className="px-1 py-0.2 rounded bg-red-600 text-white text-[9px] font-bold font-mono">
-                {metrics!.maintenanceCount}⚠
-              </span>
-            )}
-            <Edit3 className="w-2.5 h-2.5 text-slate-300 group-hover:text-[#714B67] transition-colors" />
-          </div>
-        </div>
-
-        {/* Sub-label / Branch Name */}
-        {(opts?.subLabel || node.feederPanelId) && (
-          <div className="text-[11px] font-bold text-slate-800 leading-tight mt-0.5 truncate">
-            {opts?.subLabel || node.feederPanelId}
-          </div>
-        )}
-
-        {/* Brand + Type + Size */}
-        <div
-          className={`text-[9.5px] font-mono leading-tight mt-0.5 truncate ${
-            isUnrecorded ? 'text-amber-700 italic' : 'text-slate-600'
-          }`}
-        >
-          {breakerSpecLine}
-        </div>
-        <div className="flex items-center justify-between gap-1 mt-1 pt-1 border-t border-slate-100 text-[10px] font-mono">
-          <span className="text-slate-500 font-semibold truncate">{typeSizeLine}</span>
-          <span
-            className={`font-bold shrink-0 ${
-              isDecomm
-                ? 'text-slate-400'
-                : isOpen
-                ? 'text-amber-600'
-                : 'text-sky-700'
-            }`}
-          >
-            {isDecomm ? 'OFF' : `${metrics?.effectiveDisplayAmps ?? 0}A`}
-          </span>
-        </div>
-      </button>
-    );
-  };
-
-  // Source or Transformer summary block
-  const renderEquipmentBlock = (nodeId: string, tone: 'rose' | 'sky' | 'emerald' | 'amber') => {
-    const node = nodeMap.get(nodeId);
-    if (!node) return null;
-    const isDimmed = searchQuery.trim() !== '' && !matchesSearch(nodeId);
-
-    const toneClasses = {
-      rose: 'bg-white border-rose-300 hover:border-rose-500 text-rose-950',
-      sky: 'bg-white border-sky-300 hover:border-sky-500 text-sky-950',
-      emerald: 'bg-white border-emerald-300 hover:border-emerald-500 text-emerald-950',
-      amber: 'bg-amber-50/60 border-amber-300 hover:border-amber-500 text-amber-950'
-    }[tone];
-
-    return (
-      <button
-        onClick={() => setSelectedNodeId(node.id)}
-        className={`text-center rounded-lg border px-2.5 py-1.5 transition cursor-pointer shadow-2xs group ${toneClasses} ${
-          isDimmed ? 'opacity-25' : ''
-        }`}
-      >
-        <div className="text-[10.5px] font-bold leading-tight group-hover:underline">
-          {node.name}
-        </div>
-        <div className="text-[9.5px] font-mono text-slate-600 mt-0.5 leading-tight">
-          {node.kva ? `${node.kva} kVA` : ''}
-          {node.powerMw ? ` • ${node.powerMw} MW` : ''}
-          {node.voltage ? ` • ${node.voltage}` : ''}
-        </div>
-        {(node.primaryAmps || node.secondaryAmps) && (
-          <div className="text-[9px] font-mono text-slate-500 leading-tight">
-            I: {node.primaryAmps}{node.secondaryAmps ? `/${node.secondaryAmps}` : ''} A • {node.frequencyHz || 50}Hz
-          </div>
-        )}
-      </button>
-    );
-  };
-
-  const c4 = nodeMap.get('C4');
-  const c7 = nodeMap.get('C7');
-  const bothC4C7Closed = c4?.operatingState === 'CLOSED' && c7?.operatingState === 'CLOSED';
-
   return (
-    <div className="bg-[#f4f6f8] text-slate-900 rounded-xl border border-slate-300 shadow-sm overflow-hidden flex flex-col">
-      {/* Compact Engineering Header Bar */}
+    <div className="bg-white text-slate-900 rounded-lg border border-slate-300 shadow-xs overflow-hidden flex flex-col">
+      {/* Engineering Drawing Title & Control Bar */}
       <div className="bg-white border-b border-slate-200 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-2">
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-900 text-white text-[10px] font-mono font-bold">
-              <Zap className="w-3 h-3 text-amber-400 fill-amber-400" />
-              SLD v2.0 BLOCK TWIN
-            </span>
-            <h2 className="text-sm font-extrabold text-slate-900 tracking-tight">
-              USA DISTILLERS | POWER DISTRIBUTION OVERVIEW
+        <div className="flex flex-wrap items-center gap-2.5 min-w-0">
+          <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-900 text-white font-mono text-[10px] font-bold shrink-0">
+            <Zap className="w-3 h-3 text-amber-400" />
+            <span>SLD v2.0</span>
+          </div>
+          <div className="min-w-0">
+            <h2 className="text-sm font-bold text-slate-900 tracking-tight truncate">
+              USA Distillers — Plant Single-Line Power Distribution Diagram
             </h2>
-            <span className="hidden xl:inline text-[10px] font-mono text-slate-500">
-              Author: Bongani Dlamini & Sicelo Simelane • Click any block to open Branch Page & Edit
-            </span>
+            <p className="text-[10.5px] font-mono text-slate-500 truncate">
+              11 kV / 6.3 kV / 400 V Distribution • Select any breaker, transformer, or MCC to inspect or switch
+            </p>
           </div>
         </div>
 
-        {/* Metrics & Search */}
         <div className="flex flex-wrap items-center gap-2">
-          {/* Critical Hazard Indicator Pill */}
+          {/* Safety Hazard Flag */}
           {criticalAndHighHazards.length > 0 && (
             <button
+              type="button"
               onClick={() => setShowHazardModal(true)}
-              className={`px-2.5 py-1 rounded-md text-[11px] font-bold flex items-center gap-1.5 border cursor-pointer transition ${
-                bothC4C7Closed
-                  ? 'bg-red-600 text-white border-red-700 animate-pulse shadow-sm'
+              className={`px-2.5 py-1 rounded text-[11px] font-bold flex items-center gap-1.5 border cursor-pointer transition ${
+                solved.c4C7Conflict
+                  ? 'bg-red-600 text-white border-red-700 shadow-xs'
                   : 'bg-red-50 text-red-800 border-red-300 hover:bg-red-100'
               }`}
-              title="Click to inspect flagged electrical design hazards"
             >
-              <ShieldAlert className="w-3.5 h-3.5" />
+              <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
               <span>
-                {bothC4C7Closed
-                  ? 'CRITICAL FAULT: C4 & C7 BOTH CLOSED!'
+                {solved.c4C7Conflict
+                  ? 'FAULT: C4 & C7 BOTH CLOSED'
                   : `${criticalAndHighHazards.length} Safety Flag (C4 ↔ C7)`}
               </span>
             </button>
           )}
 
-          <div className="hidden md:flex items-center gap-2 text-[11px] font-mono bg-slate-100 px-2.5 py-1 rounded border border-slate-200">
-            <span className="text-slate-500">Plant Load:</span>
-            <span className="font-bold text-amber-700">{hvMetrics?.totalKw ?? 0} kW</span>
+          {/* Compact Deduplicated Telemetry Summary */}
+          <div className="hidden xl:flex items-center gap-2 text-[11px] font-mono tabular-nums bg-slate-50 px-2.5 py-1 rounded border border-slate-200">
+            <span className="text-slate-500">Installed:</span>
+            <strong className="text-slate-900">{solved.totalPlantKw} kW</strong>
+            <span className="text-slate-300">|</span>
+            <span className="text-slate-500">Est Demand:</span>
+            <strong className="text-amber-800">{solved.totalPlantEstimatedKva} kVA</strong>
+            <span className="text-slate-300">|</span>
+            <span className="text-slate-500">Metered:</span>
+            <strong className={solved.totalPlantMeasuredKva !== null ? 'text-emerald-800' : 'text-slate-500'}>
+              {solved.totalPlantMeasuredKva !== null
+                ? `${solved.totalPlantMeasuredKva} kVA (${solved.meteredTransformerCount}/3 Tx)`
+                : `Unavail (${solved.meteredTransformerCount}/3 Tx)`}
+            </strong>
             <span className="text-slate-300">|</span>
             <span className="text-slate-500">Motors:</span>
-            <span className="font-bold text-slate-900">{hvMetrics?.equipmentCount ?? 0}</span>
-            <span className="text-slate-300">|</span>
-            <span className={hvMetrics?.maintenanceCount ? 'font-bold text-red-600' : 'text-emerald-700 font-semibold'}>
-              {hvMetrics?.maintenanceCount ?? 0} Maint.
-            </span>
+            <strong className="text-slate-900">{bus11kVState?.connectedEquipmentCount ?? equipmentList.length}</strong>
           </div>
 
+          <div className="hidden lg:flex items-center gap-1.5 text-[10.5px] font-mono bg-slate-50 px-2 py-1 rounded border border-slate-200">
+            <ClipboardCheck className="w-3.5 h-3.5 text-indigo-700" />
+            <span className="text-emerald-700 font-bold" title="Healthy assets">{conditionStats.healthy} OK</span>
+            <span className="text-slate-300">/</span>
+            <span className="text-amber-700 font-bold" title="Attention / Maint / Isolated">{conditionStats.attention} Attn</span>
+            <span className="text-slate-300">/</span>
+            <span className="text-red-700 font-bold" title="Fault Detected">{conditionStats.fault} Fault</span>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setShowTemplatesModal(true)}
+            className="px-2 py-1 rounded border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-900 text-[11px] font-mono font-semibold flex items-center gap-1 cursor-pointer"
+            title={canManageTemplates ? 'Manage electrical inspection checklists' : 'View electrical inspection checklists'}
+          >
+            <Settings2 className="w-3 h-3" />
+            <span className="hidden md:inline">Checklists</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setDraftThresholds(thresholds);
+              setShowThresholdsModal(true);
+            }}
+            className="px-2 py-1 rounded border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 text-[11px] font-mono font-semibold flex items-center gap-1 cursor-pointer"
+            title="Configure electrical load, imbalance, voltage & PF alert thresholds"
+          >
+            <SlidersHorizontal className="w-3 h-3" />
+            <span className="hidden md:inline">Thresholds</span>
+          </button>
+
+          {/* Search Input */}
           <div className="relative w-48 sm:w-56">
             <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Find C8, MCC 1, Boiler, pump..."
-              className="w-full pl-8 pr-7 py-1 bg-slate-50 border border-slate-300 rounded text-[11px] focus:outline-none focus:border-[#714B67]"
+              placeholder="Find C4, MCC 1, pump..."
+              className="w-full pl-8 pr-7 py-1 bg-slate-50 border border-slate-300 rounded text-[11px] focus:outline-none focus:border-slate-600"
             />
             {searchQuery && (
               <button
+                type="button"
                 onClick={() => setSearchQuery('')}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
               >
@@ -376,228 +736,224 @@ export const PowerDistributionSLDView: React.FC<PowerDistributionSLDViewProps> =
               </button>
             )}
           </div>
+
+          {/* Expand / Fit Controls */}
+          <div className="flex items-center border border-slate-300 rounded overflow-hidden bg-white text-[11px] font-mono">
+            <button
+              type="button"
+              onClick={handleExpandAll}
+              className="px-2 py-1 hover:bg-slate-100 text-slate-700 flex items-center gap-1 cursor-pointer border-r border-slate-200"
+              title="Expand all branches & panel motor loads"
+            >
+              <ChevronDown className="w-3 h-3" />
+              <span className="hidden sm:inline">Expand Loads</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleCollapseLoads}
+              className="px-2 py-1 hover:bg-slate-100 text-slate-700 flex items-center gap-1 cursor-pointer border-r border-slate-200"
+              title="Collapse motor lists inside MCC panels"
+            >
+              <ChevronRight className="w-3 h-3" />
+              <span className="hidden sm:inline">Compact</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => fitView({ duration: 350, padding: 0.08 })}
+              className="px-2 py-1 hover:bg-slate-100 text-slate-800 font-semibold flex items-center gap-1 cursor-pointer"
+              title="Fit full SLD to screen"
+            >
+              <Maximize2 className="w-3 h-3" />
+              <span>Fit</span>
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* SINGLE-PAGE 4-TIER BLOCK DIAGRAM WORKSPACE */}
-      <div className="p-3 lg:p-4 space-y-2.5">
-        {/* TIER 1: 3 PRIMARY POWER INCOMERS (OLD TURBINE | EEC SUPPLY | NEW TURBINE) */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-2.5 items-stretch">
-          {/* OLD TURBINE ALTERNATOR (4 cols) */}
-          <div className="lg:col-span-4 rounded-xl border-2 border-rose-300/80 bg-rose-50/40 p-2 flex flex-col justify-between">
-            <div className="flex items-center justify-between text-[9.5px] font-bold tracking-wider uppercase text-rose-800 mb-1.5 px-1">
-              <span>OLD TURBINE ALTERNATOR - STEP UP PATH</span>
-              <span className="px-1.5 py-0.2 rounded bg-rose-200/80 text-rose-900 font-mono">DECOMMISSIONED</span>
-            </div>
-            <div className="grid grid-cols-3 gap-1.5 items-stretch">
-              {renderEquipmentBlock('OLD_TURBINE', 'rose')}
-              {renderEquipmentBlock('OLD_STEP_UP_TX', 'rose')}
-              {renderBreakerChip('C1', { subLabel: 'Old Turbine VCB', compact: true })}
-            </div>
-          </div>
-
-          {/* EEC INCOMING SUPPLY (4 cols) */}
-          <div className="lg:col-span-4 rounded-xl border-2 border-sky-300/90 bg-sky-50/40 p-2 flex flex-col justify-between">
-            <div className="flex items-center justify-between text-[9.5px] font-bold tracking-wider uppercase text-sky-900 mb-1.5 px-1">
-              <span>EEC INCOMING SUPPLY</span>
-              <span className="px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800 font-mono">GRID LIVE</span>
-            </div>
-            <div className="grid grid-cols-3 gap-1.5 items-stretch">
-              {renderEquipmentBlock('EEC_SUPPLY', 'sky')}
-              {renderEquipmentBlock('METERING_TX', 'sky')}
-              {renderBreakerChip('C2', { subLabel: '11 kV Incomer', compact: true })}
-            </div>
-          </div>
-
-          {/* NEW TURBINE ALTERNATOR (4 cols) */}
-          <div className="lg:col-span-4 rounded-xl border-2 border-teal-400/80 bg-teal-50/40 p-2 flex flex-col justify-between">
-            <div className="flex items-center justify-between text-[9.5px] font-bold tracking-wider uppercase text-teal-900 mb-1.5 px-1">
-              <span>NEW TURBINE ALTERNATOR</span>
-              <span className="px-1.5 py-0.2 rounded bg-teal-200/80 text-teal-950 font-mono">CO-GEN 3.8 MW</span>
-            </div>
-            <div className="grid grid-cols-2 gap-1.5 items-stretch">
-              {renderEquipmentBlock('NEW_TURBINE', 'emerald')}
-              {renderBreakerChip('C3', { subLabel: 'New Turbine VCB', compact: true })}
-            </div>
-          </div>
-        </div>
-
-        {/* VERTICAL CONNECTORS TO 11 KV BUSBAR */}
-        <div className="hidden lg:grid grid-cols-12 h-2">
-          <div className="col-span-4 flex justify-center"><div className="w-0.5 h-full bg-rose-300 border-l border-dashed border-rose-400" /></div>
-          <div className="col-span-4 flex justify-center"><div className="w-0.5 h-full bg-sky-500" /></div>
-          <div className="col-span-4 flex justify-center"><div className="w-0.5 h-full bg-teal-500" /></div>
-        </div>
-
-        {/* TIER 2: 11 KV MAIN BUSBAR */}
-        <button
-          onClick={() => setSelectedNodeId('BUS_11KV')}
-          className="w-full py-1.5 px-4 rounded-lg bg-[#1e293b] hover:bg-slate-800 text-white font-mono text-xs font-black tracking-widest flex items-center justify-between shadow-xs cursor-pointer transition border border-slate-700"
+      {/* Main Split Workspace: Interactive SLD Canvas + Right Inspector Drawer */}
+      <div className="flex flex-col lg:flex-row flex-1 bg-[#f8fafc]">
+        <div
+          className={`relative flex-1 min-w-0 transition-all ${
+            expandedHierarchyNode ? 'h-[460px] lg:h-[520px]' : 'h-[680px] lg:h-[760px]'
+          }`}
         >
-          <span className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-            <span>11 KV BUSBAR</span>
-          </span>
-          <span className="text-[10px] font-normal text-slate-300">
-            Click to inspect HV Busbar • Total HV Est: {hvMetrics?.effectiveDisplayAmps ?? 0} A @ 11kV ({hvMetrics?.totalKw ?? 0} kW)
-          </span>
-          <span className="text-[10px] text-amber-300 font-bold">50 Hz • 3Ø</span>
-        </button>
-
-        {/* TIER 3 & TIER 4: 3 STEP-DOWN TRANSFORMERS -> MAIN CONTROL CENTRES */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 items-stretch">
-          {/* =============================================================== */}
-          {/* COLUMN 1: TX1 (1600 kVA) -> C4 -> Tx1 MCC (C7 GEN SET, C8, C9, C10) */}
-          {/* =============================================================== */}
-          <div className="flex flex-col space-y-1.5">
-            {/* HV Fuse -> Step Down Tx1 -> C4 */}
-            <div className="grid grid-cols-3 gap-1.5 items-stretch">
-              {renderBreakerChip('TX1_FUSE', { subLabel: 'HV Fused Switch', compact: true })}
-              {renderEquipmentBlock('TX1', 'amber')}
-              {renderBreakerChip('C4', { subLabel: 'Tx1 Main LV', compact: true, highlightDanger: true })}
-            </div>
-
-            {/* Tx1 Main Control Centre Container */}
-            <div className="flex-1 rounded-xl border-2 border-indigo-300 bg-indigo-50/30 p-2.5 flex flex-col justify-between space-y-2">
-              <div className="flex items-center justify-between">
-                <button
-                  onClick={() => setSelectedNodeId('BUS_TX1')}
-                  className="text-left hover:underline cursor-pointer"
-                >
-                  <div className="text-xs font-extrabold text-indigo-950">Tx1 Main Control Centre</div>
-                  <div className="text-[10px] font-mono text-indigo-700 font-semibold">Busbar | 400 V • 1600 kVA Feed</div>
-                </button>
-
-                {/* Non-Interlock Warning Flag right on Tx1 MCC */}
-                <button
-                  onClick={() => setShowHazardModal(true)}
-                  className={`px-2 py-0.5 rounded text-[9.5px] font-bold flex items-center gap-1 cursor-pointer border ${
-                    bothC4C7Closed
-                      ? 'bg-red-600 text-white border-red-700 animate-pulse'
-                      : 'bg-red-100 text-red-900 border-red-300 hover:bg-red-200'
-                  }`}
-                  title="C4 and C7 have NO changeover interlock!"
-                >
-                  <ShieldAlert className="w-3 h-3" />
-                  <span>C4 ↔ C7 NO INTERLOCK</span>
-                </button>
-              </div>
-
-              {/* Busbar Spine Line */}
-              <div className="h-1 w-full bg-indigo-500 rounded-full" />
-
-              {/* Tx1 Branches Grid: C7 (Gen Set) + C8 (MCC 1) + C9 (Boiler 2) + C10 (MCC 4) */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 items-start">
-                <div className="space-y-1.5 flex flex-col">
-                  {renderBreakerChip('C7', { subLabel: 'Gen Set Incomer', compact: true, highlightDanger: true })}
-                  {renderEquipmentBlock('GEN_SET', 'sky')}
-                </div>
-                {renderBreakerChip('C8', { subLabel: 'MCC 1 (Dist.)' })}
-                {renderBreakerChip('C9', { subLabel: 'Boiler 2' })}
-                {renderBreakerChip('C10', { subLabel: 'MCC 4 (Ferm.)' })}
-              </div>
-            </div>
-          </div>
-
-          {/* =============================================================== */}
-          {/* COLUMN 2: TX2 (800 kVA) -> C5 -> Tx2 MCC (C11, C12 -> C18/19/20, C13) */}
-          {/* =============================================================== */}
-          <div className="flex flex-col space-y-1.5">
-            {/* HV Fuse -> Step Down Tx2 -> C5 */}
-            <div className="grid grid-cols-3 gap-1.5 items-stretch">
-              {renderBreakerChip('TX2_FUSE', { subLabel: 'HV Fused Switch', compact: true })}
-              {renderEquipmentBlock('TX2', 'amber')}
-              {renderBreakerChip('C5', { subLabel: 'Tx2 Main LV', compact: true })}
-            </div>
-
-            {/* Tx2 Main Control Centre Container */}
-            <div className="flex-1 rounded-xl border-2 border-emerald-400/80 bg-emerald-50/30 p-2.5 flex flex-col justify-between space-y-2">
-              <div className="flex items-center justify-between">
-                <button
-                  onClick={() => setSelectedNodeId('BUS_TX2')}
-                  className="text-left hover:underline cursor-pointer"
-                >
-                  <div className="text-xs font-extrabold text-emerald-950">Tx2 Main Control Centre</div>
-                  <div className="text-[10px] font-mono text-emerald-800 font-semibold">Busbar | 400 V • 800 kVA Feed</div>
-                </button>
-                <span className="text-[10px] font-mono font-bold text-emerald-800 bg-emerald-100 px-1.5 py-0.5 rounded border border-emerald-200">
-                  {metricsMap.get('C5')?.effectiveDisplayAmps ?? 0} A Total
-                </span>
-              </div>
-
-              <div className="h-1 w-full bg-emerald-500 rounded-full" />
-
-              {/* Row 1 of Tx2 MCC: C11 (MCC 2), C12 (Sub-feeder), C13 (Boiler 1) */}
-              <div className="grid grid-cols-3 gap-1.5">
-                {renderBreakerChip('C11', { subLabel: 'MCC 2' })}
-                {renderBreakerChip('C12', { subLabel: 'WTP/Batch/Dam1' })}
-                {renderBreakerChip('C13', { subLabel: 'Boiler 1' })}
-              </div>
-
-              {/* Sub-branches under C12: C18 Old WTP, C19 Batch Plant, C20 Dam 1 */}
-              <div className="pt-1 border-t border-dashed border-emerald-300">
-                <div className="text-[9px] font-mono font-bold text-emerald-800 uppercase mb-1 flex items-center justify-between">
-                  <span>↳ Fed via C12 Sub-Distribution</span>
-                  <span>{metricsMap.get('C12')?.effectiveDisplayAmps ?? 0} A Sum</span>
-                </div>
-                <div className="grid grid-cols-3 gap-1.5">
-                  {renderBreakerChip('C18', { subLabel: 'OLD WTP', compact: true })}
-                  {renderBreakerChip('C19', { subLabel: 'BATCH PLANT', compact: true })}
-                  {renderBreakerChip('C20', { subLabel: 'DAM 1 (slops)', compact: true })}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* =============================================================== */}
-          {/* COLUMN 3: TX3 (800 kVA) -> C6 -> Tx3 MCC (C14, C15, C16, C17)   */}
-          {/* =============================================================== */}
-          <div className="flex flex-col space-y-1.5">
-            {/* HV Fuse -> Step Down Tx3 -> C6 */}
-            <div className="grid grid-cols-3 gap-1.5 items-stretch">
-              {renderBreakerChip('TX3_FUSE', { subLabel: 'HV Fused Switch', compact: true })}
-              {renderEquipmentBlock('TX3', 'amber')}
-              {renderBreakerChip('C6', { subLabel: 'Tx3 Main LV', compact: true })}
-            </div>
-
-            {/* Tx3 Main Control Centre Container */}
-            <div className="flex-1 rounded-xl border-2 border-purple-300 bg-purple-50/30 p-2.5 flex flex-col justify-between space-y-2">
-              <div className="flex items-center justify-between">
-                <button
-                  onClick={() => setSelectedNodeId('BUS_TX3')}
-                  className="text-left hover:underline cursor-pointer"
-                >
-                  <div className="text-xs font-extrabold text-purple-950">Tx3 Main Control Centre</div>
-                  <div className="text-[10px] font-mono text-purple-800 font-semibold">Busbar | 400 V • 800 kVA Feed</div>
-                </button>
-                <span className="text-[10px] font-mono font-bold text-purple-900 bg-purple-100 px-1.5 py-0.5 rounded border border-purple-200">
-                  {metricsMap.get('C6')?.effectiveDisplayAmps ?? 0} A Total
-                </span>
-              </div>
-
-              <div className="h-1 w-full bg-purple-500 rounded-full" />
-
-              {/* Row of 4 branches under Tx3: C14 MCC 3, C15 Sub DB1 Compressors, C16 Boiler 3, C17 New WTP */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 items-start">
-                {renderBreakerChip('C14', { subLabel: 'MCC 3 (CT/Rect)' })}
-                {renderBreakerChip('C15', { subLabel: 'Sub DB1 Comp.' })}
-                {renderBreakerChip('C16', { subLabel: 'Boiler 3' })}
-                {renderBreakerChip('C17', { subLabel: 'NEW WTP' })}
-              </div>
-            </div>
-          </div>
+          <ReactFlow
+            nodes={rfNodes}
+            edges={rfEdges}
+            nodeTypes={sldNodeTypes}
+            edgeTypes={sldEdgeTypes}
+            fitView
+            fitViewOptions={{ padding: 0.08 }}
+            minZoom={0.18}
+            maxZoom={2}
+            nodesDraggable={false}
+            nodesConnectable={false}
+            elementsSelectable
+            panOnDrag
+            zoomOnScroll
+            onPaneClick={() => setInspectedNodeId(null)}
+            proOptions={{ hideAttribution: true }}
+          >
+            <Background
+              variant={BackgroundVariant.Dots}
+              gap={20}
+              size={1}
+              color="#cbd5e1"
+            />
+            <Controls showInteractive={false} />
+            <MiniMap
+              pannable
+              zoomable
+              nodeColor={(n) => {
+                if (n.type === 'busbarNode') return '#0f172a';
+                if (n.type === 'mccPanelNode') return '#0284c7';
+                return '#64748b';
+              }}
+              maskColor="rgba(241, 245, 249, 0.7)"
+              className="!border !border-slate-300 !bg-white !rounded"
+            />
+          </ReactFlow>
         </div>
 
-        {/* Footer Legend & Revision Note */}
-        <div className="bg-white rounded-lg border border-slate-200 px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-600">
-          <div className="flex flex-wrap items-center gap-3 font-mono">
-            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500" /> CLOSED (Live)</span>
-            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-400" /> OPEN (Standby/Isolated)</span>
-            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-slate-400" /> DECOMMISSIONED</span>
-            <span className="flex items-center gap-1 text-red-700 font-bold"><ShieldAlert className="w-3 h-3" /> Hazard Flag (Click to inspect)</span>
+        {inspectedNode && inspectedMetrics && (
+          <SldInspectorDrawer
+            node={inspectedNode}
+            allNodes={powerNodes}
+            powerConnections={powerConnections}
+            electricalMeasurements={electricalMeasurements}
+            jobCards={jobCards}
+            solvedState={solved.nodeStates.get(inspectedNode.id)}
+            loadMetrics={inspectedMetrics}
+            upstreamChain={inspectedUpstream}
+            childNodes={inspectedChildren}
+            nodeHazards={inspectedHazards}
+            currentUserName={currentUserName}
+            userRole={userRole}
+            userEmail={userEmail}
+            isHierarchyExpanded={expandedHierarchyNodeId === inspectedNode.id}
+            onClose={() => setInspectedNodeId(null)}
+            onSelectNode={(id) => {
+              setInspectedNodeId(id);
+              fitView({ nodes: [{ id }], duration: 350, padding: 0.55 });
+            }}
+            onExpandHierarchyNode={handleExpandHierarchyNode}
+            onOpenBranchWorkspace={(id) => setBranchWorkspaceNodeId(id)}
+            onUpdatePowerNode={onUpdatePowerNode}
+            onRecordElectricalMeasurement={onRecordElectricalMeasurement}
+            onInspectEquipment={onSelectEquipment}
+            onNewJobCardForEquipment={onNewJobCardForEquipment}
+            onSelectJobCard={onSelectJobCard}
+            conditionSummaries={conditionSummaries}
+            onOpenNodeCondition={handleOpenNodeCondition}
+            onOpenEquipmentCondition={handleOpenEquipmentCondition}
+          />
+        )}
+      </div>
+
+      {/* Inline Docked Hierarchical Branch & Internal MCC/DB Schematic Panel */}
+      {expandedHierarchyNode && (
+        <HierarchicalBranchPanel
+          node={expandedHierarchyNode}
+          allNodes={powerNodes}
+          powerConnections={powerConnections}
+          electricalMeasurements={electricalMeasurements}
+          solved={solved}
+          equipmentList={equipmentList}
+          jobCards={jobCards}
+          hazards={hazards}
+          currentUserName={currentUserName}
+          userRole={userRole}
+          userEmail={userEmail}
+          onSelectHierarchyNode={(id) => {
+            setExpandedHierarchyNodeId(id);
+            setInspectedNodeId(id);
+            fitView({ nodes: [{ id }], duration: 350, padding: 0.5 });
+          }}
+          onSelectInspectorNode={(id) => setInspectedNodeId(id)}
+          onCloseHierarchy={() => setExpandedHierarchyNodeId(null)}
+          onOpenFullBranchWorkspace={(id) => setBranchWorkspaceNodeId(id)}
+          onCreateEquipment={onCreateEquipment}
+          onModifyEquipment={onModifyEquipment}
+          onInspectUpdateEquipment={onInspectUpdateEquipment}
+          onDeleteEquipment={onDeleteEquipment}
+          onCreatePowerConnection={onCreatePowerConnection}
+          onDeletePowerConnection={onDeletePowerConnection}
+          onRecordElectricalMeasurement={onRecordElectricalMeasurement}
+          onNewJobCardForEquipment={onNewJobCardForEquipment}
+          conditionSummaries={conditionSummaries}
+          onOpenNodeCondition={handleOpenNodeCondition}
+          onOpenEquipmentCondition={handleOpenEquipmentCondition}
+        />
+      )}
+
+      {/* Engineering Schematic Legend: Operating State + Maintenance Condition */}
+      <div className="bg-white border-t border-slate-200 px-4 py-2.5 flex flex-col gap-2 text-[10.5px] font-mono text-slate-600">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-3.5">
+            <span className="font-bold uppercase tracking-wider text-[9.5px] text-slate-400">
+              Operating State:
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-4 h-0.5 bg-red-700 inline-block" />
+              <span>11 kV / 6.3 kV HV Energized</span>
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-4 h-0.5 bg-teal-700 inline-block" />
+              <span>400/415/420 V LV Energized</span>
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-4 h-0.5 border-t-2 border-dashed border-slate-400 inline-block" />
+              <span>Open / De-energized</span>
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-4 h-0.5 border-t-2 border-dotted border-slate-300 inline-block" />
+              <span>Decommissioned</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowHazardModal(true)}
+              className="flex items-center gap-1 text-red-700 font-bold hover:underline cursor-pointer"
+            >
+              <ShieldAlert className="w-3.5 h-3.5" />
+              <span>Safety Watchdog ({hazards.length})</span>
+            </button>
           </div>
-          <span className="text-[10px] italic text-slate-500">
-            Click any component or circuit breaker (C1–C20) to view branch motors, breaker brand/size/type, Amps load & edit specifications.
+          <span className="text-slate-500">
+            Author: Bongani Dlamini & Sicelo Simelane • Scroll to zoom, drag canvas to pan
+          </span>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3 pt-1.5 border-t border-slate-100">
+          <span className="font-bold uppercase tracking-wider text-[9.5px] text-slate-400">
+            Maintenance Condition:
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
+            <span>Healthy</span>
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-amber-500 inline-block" />
+            <span>Attention Required</span>
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-red-600 inline-block" />
+            <span>Fault Detected</span>
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-sky-500 inline-block" />
+            <span>Under Maintenance</span>
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-purple-600 inline-block" />
+            <span>Isolated (LOTO)</span>
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-slate-300 inline-block" />
+            <span>Not Inspected</span>
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-slate-400 inline-block" />
+            <span>Decommissioned</span>
           </span>
         </div>
       </div>
@@ -605,13 +961,17 @@ export const PowerDistributionSLDView: React.FC<PowerDistributionSLDViewProps> =
       {/* ELECTRICAL DESIGN HAZARD & WATCHDOG MODAL */}
       {showHazardModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4">
-          <div className="bg-white rounded-xl shadow-2xl border border-slate-300 max-w-2xl w-full overflow-hidden">
+          <div className="bg-white rounded-lg shadow-2xl border border-slate-300 max-w-2xl w-full overflow-hidden">
             <div className="bg-red-700 text-white px-5 py-3.5 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <ShieldAlert className="w-5 h-5" />
                 <span className="font-bold text-sm">Plant Electrical Safety & Interlock Watchdog</span>
               </div>
-              <button onClick={() => setShowHazardModal(false)} className="text-white/80 hover:text-white cursor-pointer">
+              <button
+                type="button"
+                onClick={() => setShowHazardModal(false)}
+                className="text-white/80 hover:text-white cursor-pointer"
+              >
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -619,27 +979,42 @@ export const PowerDistributionSLDView: React.FC<PowerDistributionSLDViewProps> =
               {hazards.map((hz) => (
                 <div
                   key={hz.id}
-                  className={`p-3.5 rounded-lg border-l-4 bg-white shadow-2xs space-y-1.5 text-xs ${
+                  className={`p-3.5 rounded border bg-white shadow-2xs space-y-1.5 text-xs ${
                     hz.severity === 'CRITICAL'
-                      ? 'border-l-red-600 border border-red-300'
+                      ? 'border-red-400'
                       : hz.severity === 'HIGH'
-                      ? 'border-l-amber-500 border border-amber-300'
-                      : 'border-l-slate-400 border border-slate-200'
+                      ? 'border-amber-400'
+                      : 'border-slate-200'
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="font-extrabold text-slate-900">{hz.title}</span>
-                    <span
-                      className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                        hz.severity === 'CRITICAL'
-                          ? 'bg-red-100 text-red-800'
-                          : hz.severity === 'HIGH'
-                          ? 'bg-amber-100 text-amber-800'
-                          : 'bg-slate-100 text-slate-700'
-                      }`}
-                    >
-                      {hz.severity}
-                    </span>
+                    <span className="font-bold text-slate-900">{hz.title}</span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {hz.dataBasis && (
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[9.5px] font-mono font-bold border ${
+                            hz.dataBasis === 'MEASURED' || hz.dataBasis === 'METERED'
+                              ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                              : hz.dataBasis === 'SAFETY_INTERLOCK'
+                              ? 'bg-red-50 text-red-800 border-red-300'
+                              : 'bg-amber-50 text-amber-800 border-amber-300'
+                          }`}
+                        >
+                          {hz.dataBasis}
+                        </span>
+                      )}
+                      <span
+                        className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase ${
+                          hz.severity === 'CRITICAL'
+                            ? 'bg-red-100 text-red-800'
+                            : hz.severity === 'HIGH'
+                            ? 'bg-amber-100 text-amber-800'
+                            : 'bg-slate-100 text-slate-700'
+                        }`}
+                      >
+                        {hz.severity}
+                      </span>
+                    </div>
                   </div>
                   <p className="text-slate-700 leading-relaxed">{hz.message}</p>
                   <div className="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-slate-100">
@@ -650,13 +1025,15 @@ export const PowerDistributionSLDView: React.FC<PowerDistributionSLDViewProps> =
                       {hz.affectedNodeIds.slice(0, 3).map(id => (
                         <button
                           key={id}
+                          type="button"
                           onClick={() => {
                             setShowHazardModal(false);
-                            setSelectedNodeId(id);
+                            setInspectedNodeId(id);
+                            fitView({ nodes: [{ id }], duration: 350, padding: 0.55 });
                           }}
-                          className="px-2 py-0.5 rounded bg-slate-900 hover:bg-[#714B67] text-white font-mono text-[10px] font-bold cursor-pointer"
+                          className="px-2 py-0.5 rounded bg-slate-900 hover:bg-slate-700 text-white font-mono text-[10px] font-bold cursor-pointer"
                         >
-                          Open {id}
+                          Locate {id}
                         </button>
                       ))}
                     </div>
@@ -667,6 +1044,181 @@ export const PowerDistributionSLDView: React.FC<PowerDistributionSLDViewProps> =
           </div>
         </div>
       )}
+
+      {/* CONFIGURABLE ELECTRICAL ALERT THRESHOLDS MODAL */}
+      {showThresholdsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-lg shadow-2xl border border-slate-300 max-w-lg w-full overflow-hidden">
+            <div className="bg-slate-900 text-white px-4 py-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <SlidersHorizontal className="w-4 h-4 text-teal-400" />
+                <span className="font-bold text-sm">Electrical Monitoring Alert Thresholds</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowThresholdsModal(false)}
+                className="text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4 space-y-3 text-xs bg-slate-50">
+              <p className="text-[11px] text-slate-600">
+                Alerts generated from verified <strong>MEASURED / METERED</strong> readings are always flagged separately from <strong>ESTIMATED</strong> nameplate rollups.
+              </p>
+              <div className="grid grid-cols-2 gap-3 bg-white p-3 rounded border border-slate-200 font-mono">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-600 mb-1">Tx High Load (%)</label>
+                  <input
+                    type="number"
+                    min="10"
+                    max="150"
+                    value={draftThresholds.transformerHighLoadPct}
+                    onChange={(e) =>
+                      setDraftThresholds(prev => ({ ...prev, transformerHighLoadPct: Number(e.target.value) || 80 }))
+                    }
+                    className="w-full px-2 py-1 border border-slate-300 rounded"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-600 mb-1">Tx Critical Load (%)</label>
+                  <input
+                    type="number"
+                    min="10"
+                    max="150"
+                    value={draftThresholds.transformerCriticalLoadPct}
+                    onChange={(e) =>
+                      setDraftThresholds(prev => ({ ...prev, transformerCriticalLoadPct: Number(e.target.value) || 95 }))
+                    }
+                    className="w-full px-2 py-1 border border-slate-300 rounded"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-600 mb-1">Breaker Warning (%)</label>
+                  <input
+                    type="number"
+                    min="10"
+                    max="150"
+                    value={draftThresholds.breakerWarningPct}
+                    onChange={(e) =>
+                      setDraftThresholds(prev => ({ ...prev, breakerWarningPct: Number(e.target.value) || 85 }))
+                    }
+                    className="w-full px-2 py-1 border border-slate-300 rounded"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-600 mb-1">Breaker Critical (%)</label>
+                  <input
+                    type="number"
+                    min="10"
+                    max="150"
+                    value={draftThresholds.breakerCriticalPct}
+                    onChange={(e) =>
+                      setDraftThresholds(prev => ({ ...prev, breakerCriticalPct: Number(e.target.value) || 100 }))
+                    }
+                    className="w-full px-2 py-1 border border-slate-300 rounded"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-600 mb-1">Phase Imbalance Warn (%)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={draftThresholds.phaseImbalanceWarnPct}
+                    onChange={(e) =>
+                      setDraftThresholds(prev => ({ ...prev, phaseImbalanceWarnPct: Number(e.target.value) || 15 }))
+                    }
+                    className="w-full px-2 py-1 border border-slate-300 rounded"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-600 mb-1">Min Power Factor Warn</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0.1"
+                    max="1"
+                    value={draftThresholds.minPowerFactorWarn}
+                    onChange={(e) =>
+                      setDraftThresholds(prev => ({ ...prev, minPowerFactorWarn: Number(e.target.value) || 0.85 }))
+                    }
+                    className="w-full px-2 py-1 border border-slate-300 rounded"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-600 mb-1">Voltage Dev Warn (%)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="50"
+                    value={draftThresholds.voltageDeviationWarnPct}
+                    onChange={(e) =>
+                      setDraftThresholds(prev => ({ ...prev, voltageDeviationWarnPct: Number(e.target.value) || 5 }))
+                    }
+                    className="w-full px-2 py-1 border border-slate-300 rounded"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-600 mb-1">Voltage Dev Critical (%)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="50"
+                    value={draftThresholds.voltageDeviationCriticalPct}
+                    onChange={(e) =>
+                      setDraftThresholds(prev => ({ ...prev, voltageDeviationCriticalPct: Number(e.target.value) || 10 }))
+                    }
+                    className="w-full px-2 py-1 border border-slate-300 rounded"
+                  />
+                </div>
+              </div>
+              <div className="flex items-center justify-between pt-2 border-t border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setDraftThresholds(DEFAULT_ELECTRICAL_THRESHOLDS)}
+                  className="px-2.5 py-1.5 rounded border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-semibold flex items-center gap-1 cursor-pointer"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>Reset Defaults</span>
+                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowThresholdsModal(false)}
+                    className="px-3 py-1.5 rounded border border-slate-300 bg-white cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setThresholds(draftThresholds);
+                      try {
+                        window.localStorage.setItem(THRESHOLDS_STORAGE_KEY, JSON.stringify(draftThresholds));
+                      } catch {
+                        // Ignore storage quota errors
+                      }
+                      setShowThresholdsModal(false);
+                    }}
+                    className="px-4 py-1.5 rounded bg-teal-700 hover:bg-teal-800 text-white font-bold cursor-pointer"
+                  >
+                    Apply Thresholds
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {inspectionModals}
     </div>
   );
 };
+
+export const PowerDistributionSLDView: React.FC<PowerDistributionSLDViewProps> = (props) => (
+  <ReactFlowProvider>
+    <PowerDistributionSLDCanvas {...props} />
+  </ReactFlowProvider>
+);

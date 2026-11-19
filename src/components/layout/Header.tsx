@@ -12,6 +12,7 @@ import {
   Database
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { firebaseRuntimeInfo } from '../../firebase';
 
 interface HeaderProps {
   currentView: string;
@@ -51,6 +52,10 @@ export const Header: React.FC<HeaderProps> = ({
         return ['Operations', 'Physical Works Requisitions (Paper Book Intake Archive)'];
       case 'equipment':
         return ['Maintenance', 'Plant Machinery & Motors (105 Assets)'];
+      case 'electrical':
+        return subView
+          ? ['Engineering', 'Electrical Distribution', subView]
+          : ['Engineering', 'Electrical Distribution'];
       case 'organogram':
         return ['Executive Governance', 'Company Organogram & Leadership'];
       case 'settings':
@@ -117,10 +122,10 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Right: Environment, Alerts, User Profile */}
         <div className="flex items-center space-x-2 text-xs">
-          {/* Subtle Environment Indicator Badge */}
+          {/* Environment Indicator Badge */}
           <div className="flex items-center space-x-1 px-2 py-0.5 rounded bg-emerald-950/60 border border-emerald-400/30 text-emerald-300 font-mono text-[11px]">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-            <span>DEV: distillers-erp-dev</span>
+            <span>{firebaseRuntimeInfo.environment.toUpperCase()}: {firebaseRuntimeInfo.projectId}</span>
           </div>
 
           {/* Emergency Alert Indicator */}
@@ -246,7 +251,7 @@ export const Header: React.FC<HeaderProps> = ({
             ISO 55001 Asset Management Compliant
           </span>
           <span className="text-white/30">|</span>
-          <span>Plant: Kentucky Distillery Facility #3</span>
+          <span>Plant: Great Usuthu Distillery — Big Bend</span>
         </div>
       </div>
     </header>

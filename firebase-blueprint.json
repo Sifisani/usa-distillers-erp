@@ -234,9 +234,286 @@
           "type": "string",
           "enum": ["CLOSED", "OPEN", "TRIPPED", "DECOMMISSIONED"],
           "description": "Current switching state"
+        },
+        "sourceNodeIds": {
+          "type": "array",
+          "description": "Multi-source upstream electrical node IDs"
+        },
+        "approvedBy": {
+          "type": "string",
+          "description": "Engineering supervisor/manager who approved topology modification",
+          "maxLength": 120
+        },
+        "approvedAt": {
+          "type": "string",
+          "description": "ISO approval timestamp",
+          "maxLength": 40
         }
       },
       "required": ["code", "name", "category", "operatingState"]
+    },
+    "powerConnection": {
+      "title": "Power Distribution Connection",
+      "description": "Explicit directed electrical connection separating switching nodes from topology edges for multi-source and busbar feeds",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique connection document ID",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "sourceNodeId": {
+          "type": "string",
+          "description": "Upstream source node ID",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "targetNodeId": {
+          "type": "string",
+          "description": "Downstream target node ID",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "voltageTier": {
+          "type": "string",
+          "enum": ["11kV", "6.3kV", "400V", "415V", "420V"],
+          "description": "Conductor nominal voltage tier"
+        },
+        "edgeRole": {
+          "type": "string",
+          "enum": ["PRIMARY_FEED", "SUB_FEED", "STANDBY_FEED", "INTERLOCK_TIE"],
+          "description": "Electrical connection role"
+        },
+        "label": {
+          "type": "string",
+          "description": "Conductor / bus tie engineering label",
+          "maxLength": 150
+        },
+        "approvedBy": {
+          "type": "string",
+          "description": "Authorized electrical engineer approving connection",
+          "maxLength": 120
+        },
+        "approvedAt": {
+          "type": "string",
+          "description": "ISO timestamp of approval",
+          "maxLength": 40
+        },
+        "createdBy": {
+          "type": "string",
+          "description": "Author name",
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO timestamp of creation",
+          "maxLength": 40
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp of last update",
+          "maxLength": 40
+        }
+      },
+      "required": ["sourceNodeId", "targetNodeId", "voltageTier", "edgeRole"]
+    },
+    "dailyPlantReport": {
+      "title": "Daily Plant Report",
+      "description": "Daily distillery operations, water treatment, steam, fermentation, molasses, and tank inventory sheet",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Report document ID e.g. DPR-2026-09-18"
+        },
+        "reportDate": {
+          "type": "string",
+          "description": "Report calendar date (YYYY-MM-DD)"
+        },
+        "reportedBy": {
+          "type": "string",
+          "description": "Authoring plant supervisor or operator"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Draft", "Submitted", "Verified"],
+          "description": "Report verification status"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp in ISO format"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Last update timestamp in ISO format"
+        }
+      },
+      "required": ["id", "reportDate", "reportedBy", "status"]
+    },
+    "electricalMeasurement": {
+      "title": "Electrical Measurement Record",
+      "description": "Immutable append-only historical field or metered electrical measurement record for power distribution nodes and plant motors",
+      "type": "object",
+      "properties": {
+        "assetId": {
+          "type": "string",
+          "description": "Target PowerDistributionNode ID or Equipment ID",
+          "maxLength": 128
+        },
+        "assetKind": {
+          "type": "string",
+          "enum": ["POWER_NODE", "EQUIPMENT"],
+          "description": "Asset registry type"
+        },
+        "assetCode": {
+          "type": "string",
+          "description": "Asset tag/code e.g. TX1, C8, EQ-DIST-01",
+          "maxLength": 50
+        },
+        "measurementType": {
+          "type": "string",
+          "enum": ["CURRENT", "VOLTAGE", "POWER", "POWER_FACTOR", "FREQUENCY", "ENERGY", "COMPREHENSIVE_PANEL"],
+          "description": "Electrical measurement category"
+        },
+        "phase": {
+          "type": "string",
+          "enum": ["3PH_TOTAL", "3PH_AVG", "L1", "L2", "L3", "L1_L2", "L2_L3", "L3_L1"],
+          "description": "Measured phase or 3-phase reference"
+        },
+        "unit": {
+          "type": "string",
+          "description": "Primary unit e.g. A, V, kW, kVA, MULTI",
+          "maxLength": 30
+        },
+        "source": {
+          "type": "string",
+          "enum": ["MEASURED", "METERED"],
+          "description": "Field clamp/multimeter measurement or installed meter reading"
+        },
+        "values": {
+          "type": "object",
+          "description": "Numeric readings map (currentAmps, currentL1-L3, voltageV, activePowerKw, apparentPowerKva, reactivePowerKvar, powerFactor, frequencyHz, energyKwh)"
+        },
+        "timestamp": {
+          "type": "string",
+          "description": "ISO-8601 timestamp when measurement was taken",
+          "maxLength": 40
+        },
+        "recordedBy": {
+          "type": "string",
+          "description": "Display name of recording electrician or engineer",
+          "maxLength": 120
+        },
+        "recordedByUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of recorder",
+          "maxLength": 128
+        },
+        "notes": {
+          "type": "string",
+          "description": "Optional field observation notes",
+          "maxLength": 1000
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Server/client creation ISO timestamp",
+          "maxLength": 40
+        }
+      },
+      "required": ["assetId", "assetKind", "measurementType", "phase", "unit", "source", "values", "timestamp", "recordedBy", "recordedByUid", "createdAt"]
+    },
+    "electricalInspection": {
+      "title": "Electrical Asset Inspection Record",
+      "description": "Immutable append-only structured electrical inspection record linked to plant equipment or SLD nodes",
+      "type": "object",
+      "properties": {
+        "inspectionNumber": { "type": "string", "maxLength": 60 },
+        "assetId": { "type": "string", "maxLength": 128 },
+        "assetKind": { "type": "string", "enum": ["POWER_NODE", "EQUIPMENT"] },
+        "assetCode": { "type": "string", "maxLength": 50 },
+        "assetName": { "type": "string", "maxLength": 150 },
+        "assetCategory": { "type": "string", "enum": ["CIRCUIT_BREAKER", "TRANSFORMER", "MOTOR", "MCC_DB"] },
+        "plantArea": { "type": "string", "maxLength": 120 },
+        "electricalFeeder": { "type": "string", "maxLength": 150 },
+        "conditionAssessment": {
+          "type": "string",
+          "enum": ["HEALTHY", "ATTENTION_REQUIRED", "FAULT_DETECTED", "UNDER_MAINTENANCE", "ISOLATED", "DECOMMISSIONED"]
+        },
+        "operatingStateSnapshot": { "type": "string", "maxLength": 40 },
+        "templateId": { "type": "string", "enum": ["CIRCUIT_BREAKER", "TRANSFORMER", "MOTOR", "MCC_DB"] },
+        "templateVersion": { "type": "number" },
+        "checklistResults": { "type": "array" },
+        "observations": { "type": "string", "maxLength": 3000 },
+        "photos": { "type": "array" },
+        "recommendations": { "type": "string", "maxLength": 2000 },
+        "followUpRequired": { "type": "boolean" },
+        "followUpAction": { "type": "string", "maxLength": 500 },
+        "recommendedPriority": { "type": "string", "enum": ["Low", "Medium", "High", "Emergency"] },
+        "technicianId": { "type": "string", "maxLength": 128 },
+        "technicianName": { "type": "string", "maxLength": 120 },
+        "technicianRole": { "type": "string", "enum": ["Admin", "Manager", "Supervisor", "Technician"] },
+        "inspectedAt": { "type": "string", "maxLength": 40 },
+        "createdAt": { "type": "string", "description": "Server timestamp" },
+        "correctsInspectionId": { "type": "string", "maxLength": 128 },
+        "amendmentReason": { "type": "string", "maxLength": 500 }
+      },
+      "required": [
+        "inspectionNumber",
+        "assetId",
+        "assetKind",
+        "assetCode",
+        "assetName",
+        "assetCategory",
+        "plantArea",
+        "electricalFeeder",
+        "conditionAssessment",
+        "templateId",
+        "templateVersion",
+        "checklistResults",
+        "observations",
+        "photos",
+        "recommendations",
+        "followUpRequired",
+        "technicianId",
+        "technicianName",
+        "technicianRole",
+        "inspectedAt",
+        "createdAt"
+      ]
+    },
+    "electricalInspectionReview": {
+      "title": "Electrical Inspection Supervisor Review",
+      "description": "Immutable supervisor/manager review and approval decision referencing an inspection record",
+      "type": "object",
+      "properties": {
+        "inspectionId": { "type": "string", "maxLength": 128 },
+        "assetId": { "type": "string", "maxLength": 128 },
+        "decision": { "type": "string", "enum": ["APPROVED", "ACTION_REQUIRED"] },
+        "reviewNotes": { "type": "string", "maxLength": 1000 },
+        "reviewerUid": { "type": "string", "maxLength": 128 },
+        "reviewerName": { "type": "string", "maxLength": 120 },
+        "reviewerRole": { "type": "string", "enum": ["Admin", "Manager", "Supervisor"] },
+        "reviewedAt": { "type": "string", "maxLength": 40 },
+        "createdAt": { "type": "string", "description": "Server timestamp" }
+      },
+      "required": ["inspectionId", "assetId", "decision", "reviewNotes", "reviewerUid", "reviewerName", "reviewerRole", "reviewedAt", "createdAt"]
+    },
+    "inspectionTemplate": {
+      "title": "Configurable Inspection Checklist Template",
+      "description": "Admin-managed electrical inspection template by equipment category",
+      "type": "object",
+      "properties": {
+        "category": { "type": "string", "enum": ["CIRCUIT_BREAKER", "TRANSFORMER", "MOTOR", "MCC_DB"] },
+        "title": { "type": "string", "maxLength": 150 },
+        "description": { "type": "string", "maxLength": 500 },
+        "version": { "type": "number" },
+        "items": { "type": "array" },
+        "updatedBy": { "type": "string", "maxLength": 120 },
+        "updatedByUid": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "description": "Server timestamp" }
+      },
+      "required": ["category", "title", "description", "version", "items", "updatedBy", "updatedByUid", "updatedAt"]
     }
   },
   "firestore": {
@@ -259,6 +536,30 @@
     "/powerDistributionNodes/{nodeId}": {
       "schema": "powerDistributionNode",
       "description": "Editable SLD circuit breakers (C1-C20), transformers, HV fuses, busbars, and generators"
+    },
+    "/powerConnections/{connectionId}": {
+      "schema": "powerConnection",
+      "description": "Verified multi-source and sub-feeder electrical topology connections"
+    },
+    "/dailyPlantReports/{reportId}": {
+      "schema": "dailyPlantReport",
+      "description": "Daily Plant Operations, Steam, Water, Molasses, and Alcohol Inventory reports"
+    },
+    "/electricalMeasurements/{measurementId}": {
+      "schema": "electricalMeasurement",
+      "description": "Immutable append-only historical field and metered electrical measurements for SLD nodes and motors"
+    },
+    "/electricalInspections/{inspectionId}": {
+      "schema": "electricalInspection",
+      "description": "Immutable append-only structured electrical inspection records across switchgear, transformers, MCCs, and motors"
+    },
+    "/electricalInspectionReviews/{reviewId}": {
+      "schema": "electricalInspectionReview",
+      "description": "Immutable supervisor/manager approval and review records for electrical inspections"
+    },
+    "/inspectionTemplates/{templateId}": {
+      "schema": "inspectionTemplate",
+      "description": "Engineering-admin managed inspection checklist templates keyed by category"
     }
   }
 }

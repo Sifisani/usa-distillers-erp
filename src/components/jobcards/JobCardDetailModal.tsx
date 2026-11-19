@@ -545,27 +545,42 @@ export const JobCardDetailModal: React.FC<JobCardDetailModalProps> = ({
               </div>
             </div>
 
-            {/* Electrical Specs Badge (if available from PDF checklist) */}
-            {specs && (
+            {/* Electrical Specs & Inspection Reference Badge */}
+            {(specs || card.inspectionReference || card.electricalFeeder) && (
               <div className="bg-purple-50/70 border border-purple-200 rounded p-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-purple-900">
                 <span className="font-bold flex items-center gap-1 text-[#714B67]">
                   <Zap className="w-3.5 h-3.5 text-amber-500" />
-                  Electrical Checklist Data:
+                  Electrical Data:
                 </span>
-                {specs.powerKw && <span><strong>Motor:</strong> {specs.powerKw} kW</span>}
-                {specs.starterType && (
+                {card.inspectionReference && (
+                  <span className="bg-purple-200/80 text-purple-950 px-1.5 py-0.5 rounded font-mono font-bold">
+                    Inspection: {card.inspectionReference}
+                  </span>
+                )}
+                {card.electricalFeeder && (
+                  <span className="font-mono text-slate-700">
+                    <strong>Feeder:</strong> {card.electricalFeeder}
+                  </span>
+                )}
+                {card.equipmentCode && (
+                  <span className="font-mono text-slate-700">
+                    <strong>Tag:</strong> {card.equipmentCode}
+                  </span>
+                )}
+                {specs?.powerKw && <span><strong>Motor:</strong> {specs.powerKw} kW</span>}
+                {specs?.starterType && (
                   <span className="bg-purple-200/80 text-purple-900 px-1.5 py-0.5 rounded font-mono font-semibold">
                     Starter: {specs.starterType}
                   </span>
                 )}
-                {specs.ratedCurrentAmps && <span><strong>Rated:</strong> {specs.ratedCurrentAmps} A</span>}
-                {specs.overloadAmps && (
+                {specs?.ratedCurrentAmps && <span><strong>Rated:</strong> {specs.ratedCurrentAmps} A</span>}
+                {specs?.overloadAmps && (
                   <span className="bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded font-mono font-semibold">
                     O/L Setting: {specs.overloadAmps} A
                   </span>
                 )}
-                {specs.speedRpm && <span><strong>Speed:</strong> {specs.speedRpm} RPM</span>}
-                {specs.plantArea && <span className="text-slate-600">Area: <strong>{specs.plantArea}</strong></span>}
+                {specs?.speedRpm && <span><strong>Speed:</strong> {specs.speedRpm} RPM</span>}
+                {specs?.plantArea && <span className="text-slate-600">Area: <strong>{specs.plantArea}</strong></span>}
               </div>
             )}
 

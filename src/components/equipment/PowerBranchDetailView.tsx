@@ -1,10 +1,12 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   ArrowLeft,
   Zap,
   ShieldAlert,
   AlertTriangle,
   CheckCircle2,
+  ClipboardCheck,
+  Clock,
   Edit3,
   Wrench,
   Plus,
@@ -17,18 +19,26 @@ import {
   Check,
   ArrowRightLeft,
   Gauge,
-  Activity
+  Activity,
+  Trash2
 } from 'lucide-react';
 import {
   PowerDistributionNode,
+  PowerConnection,
+  PowerEdgeRole,
+  PowerVoltageTier,
   Equipment,
   JobCard,
   BreakerType,
   BreakerOperatingState,
   FeederPanelId,
+  PlantArea,
   StarterType,
   EquipmentStatus,
-  EquipmentModificationLog
+  EquipmentModificationLog,
+  ElectricalMeasurement,
+  LoadDataSource,
+  UserProfile
 } from '../../types';
 import {
   FEEDER_PANELS,
@@ -36,14 +46,34 @@ import {
   getUpstreamChain,
   ElectricalHazardAlert
 } from '../../core/master-data/powerDistributionData';
+import {
+  buildEffectivePowerEdges,
+  getDirectChildNodeIds
+} from '../../core/electrical/topologySolver';
+import {
+  CreateElectricalMeasurementInput,
+  resolveNominalNodeVoltageV
+} from '../../core/electrical/loadCalculations';
+import {
+  canEditEquipmentInspectionOnly,
+  isAuthorizedElectricalEngineer,
+  validateSafeEquipmentDelete
+} from '../../core/electrical/permissions';
+import { AssetConditionSummary } from '../../core/electrical/inspections';
+import { ConditionBadge } from './sld/ConditionBadge';
+import { LogMeasurementModal } from './sld/LogMeasurementModal';
 
 interface PowerBranchDetailViewProps {
   node: PowerDistributionNode;
   allNodes: PowerDistributionNode[];
+  powerConnections?: PowerConnection[];
+  electricalMeasurements?: ElectricalMeasurement[];
   equipmentList: Equipment[];
   jobCards: JobCard[];
   hazards: ElectricalHazardAlert[];
   currentUserName: string;
+  userRole?: UserProfile['role'] | null;
+  userEmail?: string | null;
   onBackToOverview: () => void;
   onNavigateToNode: (nodeId: string) => void;
   onUpdatePowerNode: (
@@ -69,30 +99,103 @@ interface PowerBranchDetailViewProps {
       newValues?: Record<string, any>;
     }
   ) => Promise<void>;
+  onInspectUpdateEquipment?: (
+    equipment: Equipment,
+    inspection: {
+      loadCurrentAmps?: number;
+      status?: EquipmentStatus;
+      notes?: string;
+    },
+    audit: {
+      inspectedBy: string;
+      reason: string;
+    }
+  ) => Promise<void>;
+  onDeleteEquipment?: (equipment: Equipment) => Promise<void>;
+  onCreatePowerConnection?: (candidate: {
+    sourceNodeId: string;
+    targetNodeId: string;
+    voltageTier: PowerVoltageTier;
+    edgeRole: PowerEdgeRole;
+    label?: string;
+    reason: string;
+    createdBy: string;
+  }) => Promise<void>;
+  onDeletePowerConnection?: (connectionId: string) => Promise<void>;
+  onRecordElectricalMeasurement?: (
+    input: Omit<CreateElectricalMeasurementInput, 'recordedByUid'> & {
+      targetNode?: PowerDistributionNode;
+    }
+  ) => Promise<void>;
   onCreateEquipment?: (data: any) => Promise<void>;
   onNewJobCardForEquipment?: (equipment: Equipment) => void;
   onInspectEquipment?: (equipment: Equipment) => void;
+  conditionSummaries?: Map<string, AssetConditionSummary>;
+  onOpenNodeCondition?: (nodeId: string) => void;
+  onOpenEquipmentCondition?: (equipment: Equipment) => void;
+}
+
+function sourceChipClass(source?: LoadDataSource | null): string {
+  switch (source) {
+    case 'METERED':
+      return 'bg-sky-50 text-sky-900 border-sky-300';
+    case 'MEASURED':
+      return 'bg-emerald-50 text-emerald-900 border-emerald-300';
+    case 'NAMEPLATE':
+      return 'bg-slate-100 text-slate-700 border-slate-300';
+    default:
+      return 'bg-amber-50 text-amber-900 border-amber-300';
+  }
 }
 
 export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
   node,
   allNodes,
+  powerConnections = [],
+  electricalMeasurements = [],
   equipmentList,
   jobCards,
   hazards,
   currentUserName,
+  userRole,
+  userEmail,
   onBackToOverview,
   onNavigateToNode,
   onUpdatePowerNode,
   onModifyEquipment,
+  onInspectUpdateEquipment,
+  onDeleteEquipment,
+  onRecordElectricalMeasurement,
   onCreateEquipment,
   onNewJobCardForEquipment,
-  onInspectEquipment
+  onInspectEquipment,
+  conditionSummaries,
+  onOpenNodeCondition,
+  onOpenEquipmentCondition
 }) => {
-  const [activeTab, setActiveTab] = useState<'downstream' | 'history'>('downstream');
+  const isEngineer = isAuthorizedElectricalEngineer(userRole, userEmail);
+  const canInspect = canEditEquipmentInspectionOnly(userRole) || isEngineer;
+  const [activeTab, setActiveTab] = useState<'downstream' | 'measurements' | 'history'>('downstream');
+  const [measurementTarget, setMeasurementTarget] = useState<{
+    assetId: string;
+    assetKind: 'POWER_NODE' | 'EQUIPMENT';
+    assetCode: string;
+    assetName: string;
+    nominalVoltageV: number;
+    targetNode?: PowerDistributionNode;
+  } | null>(null);
   const [isEditingNode, setIsEditingNode] = useState(false);
   const [savingNode, setSavingNode] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
+  const [motorError, setMotorError] = useState<string | null>(null);
+  const [newMotorError, setNewMotorError] = useState<string | null>(null);
+  const [branchActionError, setBranchActionError] = useState<string | null>(null);
+  const [inspectTarget, setInspectTarget] = useState<Equipment | null>(null);
+  const [inspLoad, setInspLoad] = useState('');
+  const [inspStatus, setInspStatus] = useState<EquipmentStatus>('Operational');
+  const [inspNotes, setInspNotes] = useState('');
+  const [inspReason, setInspReason] = useState('');
+  const [savingInsp, setSavingInsp] = useState(false);
 
   // Node Edit Form State
   const [editName, setEditName] = useState(node.name);
@@ -150,8 +253,24 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
   const [newMotorRpm, setNewMotorRpm] = useState('1475');
   const [savingNewMotor, setSavingNewMotor] = useState(false);
 
+  // Reset branch view state cleanly whenever navigating to another node
+  useEffect(() => {
+    setActiveTab('downstream');
+    setIsEditingNode(false);
+    setMotorToEdit(null);
+    setIsAddMotorOpen(false);
+    setInspectTarget(null);
+    setMeasurementTarget(null);
+    setPendingDangerStateConfirm(null);
+    setEditError(null);
+    setMotorError(null);
+    setNewMotorError(null);
+    setBranchActionError(null);
+  }, [node.id]);
+
   // Re-sync edit state when node changes
   const openNodeEdit = () => {
+    if (!isEngineer) return;
     setEditName(node.name);
     setEditBrand(node.brand);
     setEditModel(node.model);
@@ -176,19 +295,55 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
     setIsEditingNode(true);
   };
 
-  const upstreamChain = useMemo(() => getUpstreamChain(node.id, allNodes), [node.id, allNodes]);
-  const loadMetrics = useMemo(
-    () => computeNodeLoadMetrics(node, allNodes, equipmentList),
-    [node, allNodes, equipmentList]
+  const effectiveEdges = useMemo(
+    () => buildEffectivePowerEdges(allNodes, powerConnections),
+    [allNodes, powerConnections]
   );
 
-  // Direct child SLD nodes (e.g., for C12 -> C18/C19/C20; for BUS_TX1 -> C7/C8/C9/C10; for C4 -> BUS_TX1)
+  const upstreamChain = useMemo(
+    () => getUpstreamChain(node.id, allNodes, powerConnections),
+    [node.id, allNodes, powerConnections]
+  );
+  const loadMetrics = useMemo(
+    () =>
+      computeNodeLoadMetrics(
+        node,
+        allNodes,
+        equipmentList,
+        jobCards,
+        powerConnections,
+        electricalMeasurements
+      ),
+    [node, allNodes, equipmentList, jobCards, powerConnections, electricalMeasurements]
+  );
+
+  const assetMeasurements = useMemo(() => {
+    const eqIds = new Set(loadMetrics.connectedEquipment.map((e) => e.id));
+    return electricalMeasurements.filter(
+      (m) => m.assetId === node.id || eqIds.has(m.assetId)
+    );
+  }, [electricalMeasurements, node.id, loadMetrics.connectedEquipment]);
+
+  const equipmentMeasurementMap = useMemo(() => {
+    const map = new Map<string, ElectricalMeasurement>();
+    for (const m of electricalMeasurements) {
+      if (m.assetKind === 'EQUIPMENT' && !map.has(m.assetId)) {
+        map.set(m.assetId, m);
+      }
+    }
+    return map;
+  }, [electricalMeasurements]);
+
+  // Direct child SLD nodes (multi-source edge aware)
   const childNodes = useMemo(() => {
-    if (node.id === 'C4') return allNodes.filter(n => ['C7', 'C8', 'C9', 'C10'].includes(n.id));
-    if (node.id === 'C5') return allNodes.filter(n => ['C11', 'C12', 'C13'].includes(n.id));
-    if (node.id === 'C6') return allNodes.filter(n => ['C14', 'C15', 'C16', 'C17'].includes(n.id));
+    const childIds = getDirectChildNodeIds(node.id, effectiveEdges);
+    if (childIds.length > 0) {
+      return childIds
+        .map(id => allNodes.find(n => n.id === id))
+        .filter((n): n is PowerDistributionNode => Boolean(n));
+    }
     return allNodes.filter(n => n.parentNodeId === node.id);
-  }, [node.id, allNodes]);
+  }, [node.id, allNodes, effectiveEdges]);
 
   const nodeHazards = useMemo(
     () => hazards.filter(h => h.affectedNodeIds.includes(node.id)),
@@ -299,6 +454,7 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
   };
 
   const handleQuickToggleBreakerState = async () => {
+    if (!isEngineer) return;
     if (node.operatingState === 'DECOMMISSIONED') return;
     const nextState: BreakerOperatingState = node.operatingState === 'CLOSED' ? 'OPEN' : 'CLOSED';
 
@@ -338,10 +494,43 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
     setMotorEditReason('');
   };
 
+  const getPanelAreaAndDepartment = (
+    panelId: FeederPanelId
+  ): { plantArea: PlantArea; department: string } => {
+    switch (panelId) {
+      case 'MCC 1':
+        return { plantArea: 'Distillation', department: 'Production - Distillation Columns' };
+      case 'Boiler 2':
+        return { plantArea: 'Boiler 2', department: 'Utilities - Boiler House' };
+      case 'MCC 4':
+        return { plantArea: 'Fermentation', department: 'Production - Fermentation Bay' };
+      case 'MCC 2':
+        return { plantArea: 'Universal', department: 'Engineering - Electrical & Instrumentation' };
+      case 'Old Water Treatment Plant':
+      case 'New Water Treatment Plant':
+        return { plantArea: 'Water Treatment', department: 'Utilities - Water Treatment' };
+      case 'Batch Plant':
+        return { plantArea: 'CMS/Molasses Tank', department: 'Logistics - Raw Material Receiving' };
+      case 'Dam 1 (slops)':
+        return { plantArea: 'Molasses Dam 1', department: 'Utilities - Effluent Plant' };
+      case 'Boiler 1':
+        return { plantArea: 'Boiler 1', department: 'Utilities - Boiler House' };
+      case 'MCC 3':
+        return { plantArea: 'Cooling Towers', department: 'Engineering - General Plant Maintenance' };
+      case 'Sub DB1 Compressors':
+        return { plantArea: 'Universal', department: 'Engineering - Mechanical Maintenance' };
+      case 'Boiler 3':
+        return { plantArea: 'Boiler 3', department: 'Utilities - Boiler House' };
+      default:
+        return { plantArea: 'Universal', department: 'Engineering - Electrical & Instrumentation' };
+    }
+  };
+
   const handleSaveMotorEdit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!motorToEdit || !onModifyEquipment) return;
+    if (!isEngineer || !motorToEdit || !onModifyEquipment) return;
     setSavingMotor(true);
+    setMotorError(null);
     try {
       const targetPanelMeta = FEEDER_PANELS.find(p => p.id === motorEditFeederPanel);
       const updates: Partial<Equipment> = {
@@ -353,6 +542,7 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
         starterType: motorEditStarter,
         status: motorEditStatus,
         feederPanel: motorEditFeederPanel,
+        feederNodeId: targetPanelMeta?.breakerId || motorToEdit.feederNodeId,
         transformerSource: targetPanelMeta?.transformerSource || motorToEdit.transformerSource,
         feederBreaker: targetPanelMeta?.breakerCode || motorToEdit.feederBreaker
       };
@@ -371,6 +561,8 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
         newValues: updates
       });
       setMotorToEdit(null);
+    } catch (err: any) {
+      setMotorError(err.message || 'Failed to update equipment.');
     } finally {
       setSavingMotor(false);
     }
@@ -378,19 +570,20 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
 
   const handleAddMotorToBranch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!onCreateEquipment || !node.feederPanelId) return;
+    if (!isEngineer || !onCreateEquipment || !node.feederPanelId) return;
     setSavingNewMotor(true);
+    setNewMotorError(null);
     try {
       const panelMeta = FEEDER_PANELS.find(p => p.id === node.feederPanelId);
-      const isNewWtp = node.feederPanelId === 'New Water Treatment Plant';
+      const mapped = getPanelAreaAndDepartment(node.feederPanelId);
       await onCreateEquipment({
         code: newMotorCode.trim().toUpperCase(),
         name: newMotorName.trim(),
-        department: isNewWtp ? 'Utilities - Water Treatment' : 'Engineering - Electrical & Instrumentation',
+        department: mapped.department,
         location: node.location,
         status: 'Operational',
         criticality: 'High',
-        plantArea: isNewWtp ? 'Water Treatment' : 'Boiler 1',
+        plantArea: mapped.plantArea,
         powerKw: newMotorKw ? parseFloat(newMotorKw) : undefined,
         ratedCurrentAmps: newMotorRatedAmps ? parseFloat(newMotorRatedAmps) : undefined,
         loadCurrentAmps: newMotorLoadAmps ? parseFloat(newMotorLoadAmps) : undefined,
@@ -398,6 +591,7 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
         starterType: newMotorStarter,
         speedRpm: newMotorRpm ? parseFloat(newMotorRpm) : undefined,
         feederPanel: node.feederPanelId,
+        feederNodeId: panelMeta?.breakerId || node.id,
         transformerSource: panelMeta?.transformerSource || 'Tx3',
         feederBreaker: panelMeta?.breakerCode || node.code,
         notes: `Added directly to ${node.name} (${node.code}) via Power Distribution SLD.`
@@ -409,8 +603,60 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
       setNewMotorRatedAmps('');
       setNewMotorLoadAmps('');
       setNewMotorOverloadAmps('');
+    } catch (err: any) {
+      setNewMotorError(err.message || 'Could not register motor on branch.');
     } finally {
       setSavingNewMotor(false);
+    }
+  };
+
+  const openInspectModal = (eq: Equipment) => {
+    setInspectTarget(eq);
+    setInspLoad(eq.loadCurrentAmps != null ? String(eq.loadCurrentAmps) : '');
+    setInspStatus(eq.status);
+    setInspNotes(eq.notes || '');
+    setInspReason('');
+    setBranchActionError(null);
+  };
+
+  const handleSaveInspection = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inspectTarget || !onInspectUpdateEquipment) return;
+    setSavingInsp(true);
+    setBranchActionError(null);
+    try {
+      await onInspectUpdateEquipment(
+        inspectTarget,
+        {
+          loadCurrentAmps: inspLoad.trim() ? parseFloat(inspLoad) : undefined,
+          status: inspStatus,
+          notes: inspNotes.trim()
+        },
+        {
+          inspectedBy: currentUserName,
+          reason: inspReason.trim() || `Branch clamp/condition inspection on ${node.code}`
+        }
+      );
+      setInspectTarget(null);
+    } catch (err: any) {
+      setBranchActionError(err.message || 'Inspection update failed.');
+    } finally {
+      setSavingInsp(false);
+    }
+  };
+
+  const handleSafeDelete = async (eq: Equipment) => {
+    if (!isEngineer || !onDeleteEquipment) return;
+    setBranchActionError(null);
+    const check = validateSafeEquipmentDelete(eq, jobCards);
+    if (!check.canDelete) {
+      setBranchActionError(check.error || 'Equipment is referenced by Job Cards.');
+      return;
+    }
+    try {
+      await onDeleteEquipment(eq);
+    } catch (err: any) {
+      setBranchActionError(err.message || 'Failed to delete equipment.');
     }
   };
 
@@ -471,48 +717,106 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
               <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold border ${stateBadgeClass(node.operatingState)}`}>
                 {node.operatingState}
               </span>
+              <ConditionBadge
+                condition={conditionSummaries?.get(node.id)?.condition || 'NOT_INSPECTED'}
+                onClick={onOpenNodeCondition ? () => onOpenNodeCondition(node.id) : undefined}
+              />
               <span className="text-xs font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
                 {node.voltage} • {node.location}
               </span>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            {node.operatingState !== 'DECOMMISSIONED' && (
+          <div className="flex flex-wrap items-center gap-2">
+            {onOpenNodeCondition && (
               <button
-                onClick={handleQuickToggleBreakerState}
-                className={`px-3 py-1.5 rounded-md text-xs font-bold border transition cursor-pointer flex items-center gap-1.5 ${
-                  node.operatingState === 'CLOSED'
-                    ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300'
-                    : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-emerald-300'
-                }`}
+                type="button"
+                onClick={() => onOpenNodeCondition(node.id)}
+                className="px-3 py-1.5 rounded-md border border-indigo-300 bg-indigo-50 hover:bg-indigo-100 text-indigo-950 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition"
               >
-                {node.operatingState === 'CLOSED' ? (
-                  <>
-                    <Unlock className="w-3.5 h-3.5" />
-                    <span>Open / Isolate {node.code}</span>
-                  </>
-                ) : (
-                  <>
-                    <Lock className="w-3.5 h-3.5" />
-                    <span>Close / Energize {node.code}</span>
-                  </>
-                )}
+                <ClipboardCheck className="w-3.5 h-3.5 text-indigo-700" />
+                <span>
+                  Inspect / Condition ({conditionSummaries?.get(node.id)?.totalInspections ?? 0})
+                </span>
               </button>
             )}
 
-            <button
-              onClick={openNodeEdit}
-              className="px-3.5 py-1.5 rounded-md bg-[#714B67] hover:bg-[#5b3c53] text-white text-xs font-semibold shadow-xs flex items-center gap-1.5 transition cursor-pointer"
-            >
-              <Edit3 className="w-3.5 h-3.5" />
-              <span>Edit Breaker / Specs</span>
-            </button>
+            {canInspect && onRecordElectricalMeasurement && (
+              <button
+                type="button"
+                onClick={() =>
+                  setMeasurementTarget({
+                    assetId: node.id,
+                    assetKind: 'POWER_NODE',
+                    assetCode: node.code,
+                    assetName: node.name,
+                    nominalVoltageV: resolveNominalNodeVoltageV(node),
+                    targetNode: node
+                  })
+                }
+                className="px-3 py-1.5 rounded-md border border-teal-400 bg-teal-50 hover:bg-teal-100 text-teal-950 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition"
+              >
+                <Gauge className="w-3.5 h-3.5 text-teal-700" />
+                <span>Log 3Ø Measurement</span>
+              </button>
+            )}
+
+            {isEngineer ? (
+              <>
+                {node.operatingState !== 'DECOMMISSIONED' && (
+                  <button
+                    onClick={handleQuickToggleBreakerState}
+                    className={`px-3 py-1.5 rounded-md text-xs font-bold border transition cursor-pointer flex items-center gap-1.5 ${
+                      node.operatingState === 'CLOSED'
+                        ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300'
+                        : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-emerald-300'
+                    }`}
+                  >
+                    {node.operatingState === 'CLOSED' ? (
+                      <>
+                        <Unlock className="w-3.5 h-3.5" />
+                        <span>Open / Isolate {node.code}</span>
+                      </>
+                    ) : (
+                      <>
+                        <Lock className="w-3.5 h-3.5" />
+                        <span>Close / Energize {node.code}</span>
+                      </>
+                    )}
+                  </button>
+                )}
+
+                <button
+                  onClick={openNodeEdit}
+                  className="px-3.5 py-1.5 rounded-md bg-[#714B67] hover:bg-[#5b3c53] text-white text-xs font-semibold shadow-xs flex items-center gap-1.5 transition cursor-pointer"
+                >
+                  <Edit3 className="w-3.5 h-3.5" />
+                  <span>Edit Breaker / Specs</span>
+                </button>
+              </>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-amber-300 bg-amber-50 text-amber-900 font-mono text-[11px] font-bold">
+                <Lock className="w-3.5 h-3.5" />
+                <span>Topology Locked (Technician Inspection Mode)</span>
+              </span>
+            )}
           </div>
         </div>
       </div>
 
       <div className="p-6 space-y-5 flex-1">
+        {branchActionError && (
+          <div className="p-3 rounded-lg border border-red-300 bg-red-50 text-red-900 text-xs font-semibold flex items-center justify-between gap-2">
+            <span>{branchActionError}</span>
+            <button
+              type="button"
+              onClick={() => setBranchActionError(null)}
+              className="text-red-700 hover:text-red-950 cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
         {/* Safety & Interlock Watchdog Alerts */}
         {nodeHazards.map((hz) => (
           <div
@@ -535,7 +839,14 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
               }`}
             />
             <div className="flex-1 text-xs space-y-1">
-              <div className="font-extrabold text-sm">{hz.title}</div>
+              <div className="flex items-center justify-between gap-2 font-extrabold text-sm">
+                <span>{hz.title}</span>
+                {hz.dataBasis && (
+                  <span className="px-2 py-0.5 rounded bg-white border border-slate-300 font-mono text-[10px]">
+                    {hz.dataBasis}
+                  </span>
+                )}
+              </div>
               <p className="leading-relaxed">{hz.message}</p>
               <div className="font-mono text-[11px] font-bold pt-1">
                 REQUIRED ACTION: {hz.actionRequired}
@@ -550,23 +861,28 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
           <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-2xs space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                Switchgear Nameplate
+                Nameplate Specs
               </span>
-              <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-700">
-                {node.breakerType}
+              <span className={`text-[9.5px] font-mono font-bold px-1.5 py-0.5 rounded border ${sourceChipClass('NAMEPLATE')}`}>
+                NAMEPLATE
               </span>
             </div>
             <div>
               <div className={`text-base font-bold ${node.brand === 'Unrecorded' ? 'text-amber-700' : 'text-slate-900'}`}>
                 {node.brand}
               </div>
-              <div className="text-xs font-mono text-slate-600">{node.model}</div>
+              <div className="text-xs font-mono text-slate-600">{node.model} • {node.breakerType}</div>
             </div>
             <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs font-mono">
-              <span className="text-slate-500">Rated Size:</span>
-              <span className={`font-bold ${node.ratedAmps ? 'text-slate-900' : 'text-amber-600'}`}>
-                {node.ratedAmps ? `${node.ratedAmps} A` : 'Unrecorded (Edit)'}
+              <span className="text-slate-500">Rated Capacity:</span>
+              <span className={`font-bold ${node.ratedAmps || node.kva ? 'text-slate-900' : 'text-amber-600'}`}>
+                {node.kva ? `${node.kva} kVA` : ''}{node.kva && node.ratedAmps ? ' / ' : ''}
+                {node.ratedAmps ? `${node.ratedAmps} A` : (!node.kva ? 'Unrecorded' : '')}
               </span>
+            </div>
+            <div className="flex items-center justify-between text-[11px] font-mono text-slate-500">
+              <span>Nominal Base:</span>
+              <span>{loadMetrics.nominalVoltageV} V 3Ø</span>
             </div>
             {node.frameSize && (
               <div className="flex items-center justify-between text-[11px] font-mono text-slate-500">
@@ -576,32 +892,57 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
             )}
           </div>
 
-          {/* Card 2: Electrical Load (Amps & Utilization) */}
+          {/* Card 2: Verified Measured Load vs Estimated Current */}
           <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-2xs space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                Electrical Load (Amps)
+                Current & Utilisation
               </span>
-              <Gauge className="w-4 h-4 text-amber-600" />
-            </div>
-            <div className="flex items-baseline gap-2">
-              <span className="text-2xl font-black font-mono text-amber-700">
-                {loadMetrics.effectiveDisplayAmps} A
-              </span>
-              <span className="text-[11px] font-mono text-slate-500">
-                {loadMetrics.isMeasuredOverride ? '(Measured Clamp)' : '(Auto Sum Running)'}
+              <span className={`text-[9.5px] font-mono font-bold px-1.5 py-0.5 rounded border ${sourceChipClass(loadMetrics.displayDataSource)}`}>
+                {loadMetrics.displayDataSource}
               </span>
             </div>
+            <div className="flex items-baseline justify-between gap-2">
+              <div>
+                <div className="text-[10px] font-mono text-slate-500">
+                  {loadMetrics.isMeasuredOverride ? 'Measured Current' : 'Estimated Operating'}
+                </div>
+                <span className="text-2xl font-black font-mono text-amber-700">
+                  {loadMetrics.effectiveDisplayAmps} A
+                </span>
+              </div>
+              <div className="text-right font-mono text-[10.5px]">
+                <div className="text-slate-500">Measured Field:</div>
+                <strong className={loadMetrics.measuredCurrentAmps !== null ? 'text-emerald-800' : 'text-slate-400'}>
+                  {loadMetrics.measuredCurrentAmps !== null ? `${loadMetrics.measuredCurrentAmps} A` : 'Unavailable'}
+                </strong>
+              </div>
+            </div>
+            {loadMetrics.measuredPhaseCurrents && (
+              <div className="text-[10.5px] font-mono text-slate-600 flex items-center justify-between">
+                <span>
+                  L1:{loadMetrics.measuredPhaseCurrents.l1 ?? '—'} L2:{loadMetrics.measuredPhaseCurrents.l2 ?? '—'} L3:{loadMetrics.measuredPhaseCurrents.l3 ?? '—'}A
+                </span>
+                {loadMetrics.phaseImbalancePct !== null && (
+                  <span className={loadMetrics.phaseImbalancePct >= 15 ? 'text-red-700 font-bold' : ''}>
+                    Imbal {loadMetrics.phaseImbalancePct}%
+                  </span>
+                )}
+              </div>
+            )}
             <div className="text-[11px] font-mono text-slate-600 flex items-center justify-between">
-              <span>Connected FLC Sum:</span>
-              <span className="font-semibold">{loadMetrics.connectedRatedAmps} A</span>
+              <span>Installed FLC Sum:</span>
+              <span className="font-semibold">{loadMetrics.connectedRatedAmps} A ({loadMetrics.totalKw} kW)</span>
             </div>
             {loadMetrics.utilizationPct !== null && (
               <div className="pt-1">
                 <div className="flex justify-between text-[10px] font-mono mb-1">
-                  <span className="text-slate-500">Breaker Utilization</span>
+                  <span className="text-slate-500">
+                    {loadMetrics.measuredUtilizationPct !== null ? 'Measured Util.' : 'Est. Util.'}
+                  </span>
                   <span className={`font-bold ${loadMetrics.utilizationPct >= 85 ? 'text-red-600' : 'text-emerald-700'}`}>
-                    {loadMetrics.utilizationPct}% of {node.ratedAmps}A
+                    {loadMetrics.utilizationPct}%
+                    {node.category === 'TRANSFORMER' && node.kva ? ` of ${node.kva}kVA` : node.ratedAmps ? ` of ${node.ratedAmps}A` : ''}
                   </span>
                 </div>
                 <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
@@ -616,57 +957,116 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
             )}
           </div>
 
-          {/* Card 3: Branch Power & Connected Asset Health */}
+          {/* Card 3: 3-Phase Power Telemetry & Shared Bus Separation */}
           <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-2xs space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                Downstream Assets & Power
+                3-Phase Power & PF
               </span>
-              <Activity className="w-4 h-4 text-[#714B67]" />
-            </div>
-            <div className="flex items-baseline gap-3">
-              <span className="text-2xl font-black font-mono text-slate-900">
-                {loadMetrics.equipmentCount}
+              <span
+                className={`text-[9.5px] font-mono font-bold px-1.5 py-0.5 rounded border ${
+                  loadMetrics.measurementSource
+                    ? sourceChipClass(loadMetrics.measurementSource)
+                    : 'bg-slate-100 text-slate-500 border-slate-200'
+                }`}
+              >
+                {loadMetrics.measurementSource || 'UNMEASURED'}
               </span>
-              <span className="text-xs text-slate-600 font-medium">Motors / Pumps</span>
             </div>
-            <div className="text-xs font-mono text-purple-900 font-bold">
-              {loadMetrics.totalKw} kW Total Connected
+
+            <div className="grid grid-cols-3 gap-1.5 font-mono text-[10.5px]">
+              <div>
+                <span className="text-[9px] text-slate-400 block">ACTIVE kW</span>
+                <strong className="text-slate-900">
+                  {loadMetrics.measuredActivePowerKw ?? 'Unavail'}
+                </strong>
+              </div>
+              <div>
+                <span className="text-[9px] text-slate-400 block">APPARENT kVA</span>
+                <strong className="text-slate-900">
+                  {loadMetrics.measuredApparentPowerKva ?? 'Unavail'}
+                </strong>
+              </div>
+              <div>
+                <span className="text-[9px] text-slate-400 block">REACTIVE kVAr</span>
+                <strong className="text-slate-900">
+                  {loadMetrics.measuredReactivePowerKvar ?? 'Unavail'}
+                </strong>
+              </div>
             </div>
-            <div className="pt-1 border-t border-slate-100 flex items-center justify-between text-[11px]">
-              <span className="text-emerald-700 font-semibold">{loadMetrics.operationalCount} Operational</span>
-              {loadMetrics.maintenanceCount > 0 ? (
-                <span className="text-red-600 font-bold">{loadMetrics.maintenanceCount} Under Maint.</span>
+
+            <div className="grid grid-cols-3 gap-1.5 font-mono text-[10.5px] pt-1 border-t border-slate-100">
+              <div>
+                <span className="text-[9px] text-slate-400 block">VOLTAGE</span>
+                <strong className="text-slate-900">
+                  {loadMetrics.measuredVoltageV !== null ? `${loadMetrics.measuredVoltageV}V` : 'Unavail'}
+                </strong>
+              </div>
+              <div>
+                <span className="text-[9px] text-slate-400 block">PF / Hz</span>
+                <strong className="text-slate-900">
+                  {loadMetrics.measuredPowerFactor ?? '—'} / {loadMetrics.measuredFrequencyHz ?? '—'}
+                </strong>
+              </div>
+              <div>
+                <span className="text-[9px] text-slate-400 block">ENERGY kWh</span>
+                <strong className="text-slate-900 truncate block">
+                  {loadMetrics.measuredEnergyKwh ?? 'Unavail'}
+                </strong>
+              </div>
+            </div>
+
+            <div className="pt-1 border-t border-slate-100 font-mono text-[10px] text-slate-600">
+              {loadMetrics.isSharedBusSource ? (
+                <div className="space-y-0.5">
+                  <div>
+                    Shared Bus Est: <strong>{loadMetrics.sharedBusDemandAmps ?? 0}A / {loadMetrics.sharedBusDemandKva ?? 0}kVA</strong>
+                  </div>
+                  <div className="text-sky-900 font-bold">
+                    Actual Source Out:{' '}
+                    {loadMetrics.sourceActualOutputKva !== null
+                      ? `${loadMetrics.sourceActualOutputKva} kVA`
+                      : 'Unavailable (Not Metered)'}
+                  </div>
+                </div>
               ) : (
-                <span className="text-slate-400">0 Breakdowns</span>
+                <div className="flex items-center justify-between">
+                  <span>Est Demand: {loadMetrics.estimatedOperatingKva ?? '—'} kVA</span>
+                  <span>Avail: {loadMetrics.availableCapacityKva !== null ? `${loadMetrics.availableCapacityKva}kVA` : 'Unavail'}</span>
+                </div>
               )}
             </div>
           </div>
 
-          {/* Card 4: LOTO Safety & Source Ratings */}
+          {/* Card 4: LOTO Safety & Downstream Condition */}
           <div className="bg-red-50/70 rounded-xl border border-red-200 p-4 shadow-2xs space-y-1.5">
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-bold uppercase tracking-wider text-red-800">
-                LOTO Isolation Protocol
+                LOTO Isolation & Health
               </span>
               <ShieldAlert className="w-4 h-4 text-red-600" />
             </div>
             <p className="text-[11px] font-mono text-red-950 leading-relaxed">
               {node.lotoIsolationProcedure}
             </p>
-            {(node.kva || node.powerMw) && (
-              <div className="pt-1.5 border-t border-red-200/70 text-[11px] font-mono text-red-900 font-bold">
-                Rating: {node.kva ? `${node.kva} kVA` : ''}{node.powerMw ? ` • ${node.powerMw} MW` : ''}
-                {node.primaryAmps ? ` • ${node.primaryAmps}${node.secondaryAmps ? `/${node.secondaryAmps}` : ''} A` : ''}
-              </div>
-            )}
+            <div className="pt-1.5 border-t border-red-200/70 flex flex-wrap items-center justify-between gap-1 text-[10.5px] font-mono">
+              <span className="text-emerald-800 font-bold">
+                {loadMetrics.equipmentCount} Motors ({loadMetrics.operationalCount} Op)
+              </span>
+              {loadMetrics.maintenanceCount > 0 && (
+                <span className="text-red-700 font-bold">{loadMetrics.maintenanceCount} Maint</span>
+              )}
+              {loadMetrics.activeJobCards > 0 && (
+                <span className="text-red-800 font-bold">{loadMetrics.activeJobCards} Open JC</span>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* Navigation Tabs: Connected Equipment/Branches vs Node Revision History */}
+        {/* Navigation Tabs: Connected Equipment/Branches vs Immutable Measurements vs Revision History */}
         <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
           <div className="px-5 py-3 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 bg-slate-50/70">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 onClick={() => setActiveTab('downstream')}
                 className={`px-3 py-1.5 rounded-md text-xs font-semibold transition cursor-pointer ${
@@ -678,6 +1078,17 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
                 {childNodes.length > 0
                   ? `Downstream Breakers (${childNodes.length}) & Motors (${loadMetrics.equipmentCount})`
                   : `Connected Branch Motors & Pumps (${loadMetrics.equipmentCount})`}
+              </button>
+              <button
+                onClick={() => setActiveTab('measurements')}
+                className={`px-3 py-1.5 rounded-md text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
+                  activeTab === 'measurements'
+                    ? 'bg-[#714B67] text-white shadow-2xs'
+                    : 'text-slate-600 hover:bg-slate-200/70'
+                }`}
+              >
+                <Clock className="w-3.5 h-3.5" />
+                <span>Measurement Ledger ({assetMeasurements.length})</span>
               </button>
               <button
                 onClick={() => setActiveTab('history')}
@@ -692,9 +1103,12 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
               </button>
             </div>
 
-            {node.feederPanelId && onCreateEquipment && (
+            {isEngineer && node.feederPanelId && onCreateEquipment && (
               <button
-                onClick={() => setIsAddMotorOpen(true)}
+                onClick={() => {
+                  setNewMotorError(null);
+                  setIsAddMotorOpen(true);
+                }}
                 className="px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-2xs"
               >
                 <Plus className="w-3.5 h-3.5" />
@@ -707,39 +1121,101 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
             <div className="p-5 space-y-5">
               {/* Downstream Sub-Breakers Grid (if parent node like C4, C5, C6, C12, BUS_11KV) */}
               {childNodes.length > 0 && (
-                <div>
-                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">
-                    Direct Downstream Breakers / Switchgear
-                  </h4>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                    {childNodes.map((child) => {
-                      const childMetrics = computeNodeLoadMetrics(child, allNodes, equipmentList);
-                      return (
-                        <button
-                          key={child.id}
-                          onClick={() => onNavigateToNode(child.id)}
-                          className="text-left p-3 rounded-lg border border-slate-200 bg-slate-50/70 hover:bg-white hover:border-[#714B67] hover:shadow-xs transition cursor-pointer space-y-1.5"
-                        >
-                          <div className="flex items-center justify-between">
-                            <span className="font-mono text-xs font-black px-2 py-0.5 rounded bg-slate-900 text-white">
-                              {child.code}
-                            </span>
-                            <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold border ${stateBadgeClass(child.operatingState)}`}>
-                              {child.operatingState}
-                            </span>
-                          </div>
-                          <div className="font-bold text-xs text-slate-900 truncate">{child.name}</div>
-                          <div className="text-[11px] font-mono text-slate-500 truncate">
-                            {child.brand} {child.model !== 'Nameplate Unrecorded' ? `• ${child.model}` : ''}
-                          </div>
-                          <div className="pt-1.5 border-t border-slate-200/80 flex items-center justify-between text-[11px] font-mono">
-                            <span className="font-bold text-amber-700">{childMetrics.effectiveDisplayAmps} A</span>
-                            <span className="text-slate-600">{childMetrics.equipmentCount} Motors</span>
-                          </div>
-                        </button>
-                      );
-                    })}
+                <div className="space-y-4">
+                  <div>
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">
+                      Direct Downstream Breakers / Switchgear
+                    </h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                      {childNodes.map((child) => {
+                        const childMetrics = computeNodeLoadMetrics(
+                          child,
+                          allNodes,
+                          equipmentList,
+                          jobCards,
+                          powerConnections,
+                          electricalMeasurements
+                        );
+                        return (
+                          <button
+                            key={child.id}
+                            onClick={() => onNavigateToNode(child.id)}
+                            className="text-left p-3 rounded-lg border border-slate-200 bg-slate-50/70 hover:bg-white hover:border-[#714B67] hover:shadow-xs transition cursor-pointer space-y-1.5"
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="font-mono text-xs font-black px-2 py-0.5 rounded bg-slate-900 text-white">
+                                {child.code}
+                              </span>
+                              <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold border ${stateBadgeClass(child.operatingState)}`}>
+                                {child.operatingState}
+                              </span>
+                            </div>
+                            <div className="font-bold text-xs text-slate-900 truncate">{child.name}</div>
+                            <div className="text-[11px] font-mono text-slate-500 truncate">
+                              {child.brand} {child.model !== 'Nameplate Unrecorded' ? `• ${child.model}` : ''}
+                            </div>
+                            <div className="pt-1.5 border-t border-slate-200/80 flex items-center justify-between text-[11px] font-mono">
+                              <span className="font-bold text-amber-700">
+                                {childMetrics.effectiveDisplayAmps} A [{childMetrics.displayDataSource === 'METERED' ? 'MTR' : childMetrics.displayDataSource === 'MEASURED' ? 'MEAS' : 'EST'}]
+                              </span>
+                              <span className="text-slate-600">{childMetrics.equipmentCount} Motors</span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
+
+                  {loadMetrics.branchContributions.length > 0 && (
+                    <div>
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
+                        Downstream Branch Load Contribution Breakdown
+                      </h4>
+                      <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                        <table className="w-full text-left font-mono text-[11px] border-collapse">
+                          <thead className="bg-slate-100 text-slate-700 uppercase text-[10px] border-b border-slate-200">
+                            <tr>
+                              <th className="py-2 px-3">Branch</th>
+                              <th className="py-2 px-3 text-right">Motors</th>
+                              <th className="py-2 px-3 text-right">Installed (kW)</th>
+                              <th className="py-2 px-3 text-right">Est. Operating</th>
+                              <th className="py-2 px-3 text-right">Share %</th>
+                              <th className="py-2 px-3 text-right">Measured Load</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 bg-white">
+                            {loadMetrics.branchContributions.map((bc) => (
+                              <tr key={bc.nodeId} className="hover:bg-slate-50">
+                                <td className="py-2 px-3 font-bold text-slate-900">
+                                  {bc.code} <span className="font-normal text-slate-500">({bc.name})</span>
+                                </td>
+                                <td className="py-2 px-3 text-right">{bc.equipmentCount}</td>
+                                <td className="py-2 px-3 text-right">{bc.installedKw} kW</td>
+                                <td className="py-2 px-3 text-right text-amber-800">
+                                  {bc.estimatedOperatingAmps} A
+                                  {bc.estimatedApparentPowerKva !== null ? ` (${bc.estimatedApparentPowerKva} kVA)` : ''}
+                                </td>
+                                <td className="py-2 px-3 text-right">
+                                  {bc.shareOfParentEstimatedPct !== null ? `${bc.shareOfParentEstimatedPct}%` : '—'}
+                                </td>
+                                <td className="py-2 px-3 text-right">
+                                  {bc.measuredCurrentAmps !== null || bc.measuredApparentPowerKva !== null ? (
+                                    <span className="font-bold text-emerald-800">
+                                      {bc.measuredCurrentAmps !== null ? `${bc.measuredCurrentAmps} A` : ''}
+                                      {bc.measuredApparentPowerKva !== null ? ` / ${bc.measuredApparentPowerKva} kVA` : ''}
+                                      {bc.measurementSource ? ` [${bc.measurementSource}]` : ''}
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-400">Unavailable</span>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -786,6 +1262,17 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
                               c.status !== 'Cancelled'
                           ).length;
 
+                          const latestEqMeas = equipmentMeasurementMap.get(eq.id);
+                          const eqBasis: LoadDataSource = latestEqMeas
+                            ? latestEqMeas.source
+                            : eq.loadMeasurementSource === 'MEASURED' || eq.loadMeasurementSource === 'METERED'
+                            ? eq.loadMeasurementSource
+                            : eq.loadCurrentAmps !== undefined && eq.loadCurrentAmps !== null
+                            ? 'ESTIMATED'
+                            : 'NAMEPLATE';
+                          const displayAmps =
+                            latestEqMeas?.values.currentAmps ?? eq.loadCurrentAmps ?? eq.ratedCurrentAmps ?? null;
+
                           return (
                             <tr key={eq.id} className="hover:bg-slate-50/80 transition">
                               <td className="py-2.5 px-3 font-mono font-bold text-slate-900">
@@ -812,26 +1299,47 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
                                 {eq.ratedCurrentAmps ? `${eq.ratedCurrentAmps} A` : '—'}
                               </td>
                               <td className="py-2.5 px-3 text-right font-mono font-bold text-amber-700">
-                                {eq.loadCurrentAmps ? `${eq.loadCurrentAmps} A` : (eq.ratedCurrentAmps ? `${eq.ratedCurrentAmps} A` : '—')}
+                                <span>{displayAmps !== null ? `${displayAmps} A` : '—'}</span>
+                                <span className={`ml-1 px-1 py-0.2 rounded border text-[9px] font-bold ${sourceChipClass(eqBasis)}`}>
+                                  {eqBasis === 'MEASURED' ? 'MEAS' : eqBasis === 'METERED' ? 'MTR' : eqBasis === 'NAMEPLATE' ? 'FLC' : 'EST'}
+                                </span>
                               </td>
                               <td className="py-2.5 px-3 text-right font-mono text-slate-700">
                                 {eq.overloadAmps ? `${eq.overloadAmps} A` : '—'}
                               </td>
                               <td className="py-2.5 px-3">
-                                <span
-                                  className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                                    eq.status === 'Under Maintenance'
-                                      ? 'bg-red-50 text-red-700 border-red-200'
-                                      : eq.status === 'Operational'
-                                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                      : 'bg-slate-100 text-slate-600 border-slate-200'
-                                  }`}
-                                >
-                                  {eq.status}
-                                </span>
+                                <div className="flex flex-col items-start gap-1">
+                                  <span
+                                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                                      eq.status === 'Under Maintenance'
+                                        ? 'bg-red-50 text-red-700 border-red-200'
+                                        : eq.status === 'Operational'
+                                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                        : 'bg-slate-100 text-slate-600 border-slate-200'
+                                    }`}
+                                  >
+                                    {eq.status}
+                                  </span>
+                                  <ConditionBadge
+                                    condition={conditionSummaries?.get(eq.id)?.condition || 'NOT_INSPECTED'}
+                                    compact
+                                    onClick={onOpenEquipmentCondition ? () => onOpenEquipmentCondition(eq) : undefined}
+                                  />
+                                </div>
                               </td>
                               <td className="py-2.5 px-3 text-right">
                                 <div className="flex items-center justify-end gap-1">
+                                  {onOpenEquipmentCondition && (
+                                    <button
+                                      type="button"
+                                      onClick={() => onOpenEquipmentCondition(eq)}
+                                      className="px-2 py-1 rounded border border-indigo-200 bg-indigo-50 text-indigo-900 hover:bg-indigo-100 text-[11px] font-semibold cursor-pointer flex items-center gap-1"
+                                      title="Electrical Asset Inspection & Condition History"
+                                    >
+                                      <ClipboardCheck className="w-3 h-3" />
+                                      <span>Check</span>
+                                    </button>
+                                  )}
                                   {onInspectEquipment && (
                                     <button
                                       onClick={() => onInspectEquipment(eq)}
@@ -841,14 +1349,54 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
                                       <Info className="w-3.5 h-3.5" />
                                     </button>
                                   )}
-                                  {onModifyEquipment && (
+                                  {canInspect && onRecordElectricalMeasurement && (
                                     <button
-                                      onClick={() => openMotorEdit(eq)}
+                                      onClick={() =>
+                                        setMeasurementTarget({
+                                          assetId: eq.id,
+                                          assetKind: 'EQUIPMENT',
+                                          assetCode: eq.code,
+                                          assetName: eq.name,
+                                          nominalVoltageV: 400
+                                        })
+                                      }
+                                      className="px-2 py-1 rounded border border-emerald-300 bg-emerald-50 text-emerald-900 hover:bg-emerald-100 text-[11px] font-semibold cursor-pointer flex items-center gap-1"
+                                      title="Record 3-Phase Electrical Measurement"
+                                    >
+                                      <Activity className="w-3 h-3" />
+                                      <span>3Ø Log</span>
+                                    </button>
+                                  )}
+                                  {canInspect && onInspectUpdateEquipment && (
+                                    <button
+                                      onClick={() => openInspectModal(eq)}
+                                      className="px-2 py-1 rounded border border-teal-200 text-teal-800 hover:bg-teal-50 text-[11px] font-semibold cursor-pointer flex items-center gap-1"
+                                      title="Log Clamp Load Amps & Condition Inspection"
+                                    >
+                                      <Gauge className="w-3 h-3" />
+                                      <span>Inspect</span>
+                                    </button>
+                                  )}
+                                  {isEngineer && onModifyEquipment && (
+                                    <button
+                                      onClick={() => {
+                                        setMotorError(null);
+                                        openMotorEdit(eq);
+                                      }}
                                       className="px-2 py-1 rounded border border-slate-200 text-slate-700 hover:text-[#714B67] hover:border-[#714B67] hover:bg-purple-50 text-[11px] font-semibold cursor-pointer flex items-center gap-1"
                                       title="Edit Motor Specs or Move to Another Breaker"
                                     >
                                       <Edit3 className="w-3 h-3" />
                                       <span>Edit / Move</span>
+                                    </button>
+                                  )}
+                                  {isEngineer && onDeleteEquipment && (
+                                    <button
+                                      onClick={() => handleSafeDelete(eq)}
+                                      className="p-1 rounded border border-red-200 text-red-700 hover:bg-red-50 cursor-pointer"
+                                      title="Delete Asset (blocked automatically if referenced by Job Cards)"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
                                     </button>
                                   )}
                                   {onNewJobCardForEquipment && (
@@ -870,6 +1418,99 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {activeTab === 'measurements' && (
+            <div className="p-5 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs text-slate-600">
+                  Append-only immutable electrical measurement ledger for <strong>{node.code}</strong> and its connected downstream assets. Historical entries cannot be altered or deleted.
+                </p>
+                {canInspect && onRecordElectricalMeasurement && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setMeasurementTarget({
+                        assetId: node.id,
+                        assetKind: 'POWER_NODE',
+                        assetCode: node.code,
+                        assetName: node.name,
+                        nominalVoltageV: resolveNominalNodeVoltageV(node),
+                        targetNode: node
+                      })
+                    }
+                    className="px-3 py-1.5 rounded bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Gauge className="w-3.5 h-3.5" />
+                    <span>Record Measurement on {node.code}</span>
+                  </button>
+                )}
+              </div>
+
+              {assetMeasurements.length === 0 ? (
+                <div className="p-6 text-center text-xs text-slate-500 bg-slate-50 rounded-lg border border-dashed border-slate-300">
+                  No field or panel meter measurements recorded yet on {node.code} or its downstream equipment.
+                </div>
+              ) : (
+                <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                  <table className="w-full text-left font-mono text-[11px] border-collapse">
+                    <thead className="bg-slate-100 text-slate-700 uppercase text-[10px] border-b border-slate-200">
+                      <tr>
+                        <th className="py-2 px-3">Timestamp</th>
+                        <th className="py-2 px-3">Asset</th>
+                        <th className="py-2 px-3">Source</th>
+                        <th className="py-2 px-3">Phase</th>
+                        <th className="py-2 px-3">Current / L1-L2-L3</th>
+                        <th className="py-2 px-3">V / Hz / PF</th>
+                        <th className="py-2 px-3">kW / kVA / kVAr / kWh</th>
+                        <th className="py-2 px-3">Recorded By</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {assetMeasurements.map((m) => (
+                        <tr key={m.id} className="hover:bg-slate-50">
+                          <td className="py-2 px-3 text-slate-600 whitespace-nowrap">
+                            {new Date(m.timestamp).toLocaleString()}
+                          </td>
+                          <td className="py-2 px-3 font-bold text-slate-900">
+                            {m.assetCode || m.assetId}
+                          </td>
+                          <td className="py-2 px-3">
+                            <span className={`px-1.5 py-0.5 rounded border text-[9.5px] font-bold ${sourceChipClass(m.source)}`}>
+                              {m.source}
+                            </span>
+                          </td>
+                          <td className="py-2 px-3">{m.phase}</td>
+                          <td className="py-2 px-3">
+                            {m.values.currentAmps !== undefined ? `${m.values.currentAmps}A` : '—'}
+                            {(m.values.currentL1Amps !== undefined || m.values.currentL2Amps !== undefined || m.values.currentL3Amps !== undefined) && (
+                              <span className="block text-[9.5px] text-slate-500">
+                                L1:{m.values.currentL1Amps ?? '—'} L2:{m.values.currentL2Amps ?? '—'} L3:{m.values.currentL3Amps ?? '—'}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2 px-3">
+                            {m.values.voltageV !== undefined ? `${m.values.voltageV}V` : '—'}
+                            {m.values.frequencyHz !== undefined ? ` • ${m.values.frequencyHz}Hz` : ''}
+                            {m.values.powerFactor !== undefined ? ` • PF ${m.values.powerFactor}` : ''}
+                          </td>
+                          <td className="py-2 px-3">
+                            {m.values.activePowerKw !== undefined ? `${m.values.activePowerKw}kW ` : ''}
+                            {m.values.apparentPowerKva !== undefined ? `• ${m.values.apparentPowerKva}kVA ` : ''}
+                            {m.values.reactivePowerKvar !== undefined ? `• ${m.values.reactivePowerKvar}kVAr ` : ''}
+                            {m.values.energyKwh !== undefined ? `• ${m.values.energyKwh}kWh` : ''}
+                          </td>
+                          <td className="py-2 px-3 text-slate-600">
+                            <div>{m.recordedBy}</div>
+                            {m.notes && <div className="text-[9.5px] text-slate-400 truncate max-w-[160px]" title={m.notes}>{m.notes}</div>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
 
@@ -1238,6 +1879,11 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
               </button>
             </div>
             <form onSubmit={handleSaveMotorEdit} className="p-5 space-y-3 text-xs bg-slate-50">
+              {motorError && (
+                <div className="p-2.5 rounded bg-red-50 border border-red-300 text-red-800 font-semibold">
+                  {motorError}
+                </div>
+              )}
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">Motor / Equipment Name *</label>
                 <input
@@ -1383,6 +2029,11 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
               </button>
             </div>
             <form onSubmit={handleAddMotorToBranch} className="p-5 space-y-3 text-xs bg-slate-50">
+              {newMotorError && (
+                <div className="p-2.5 rounded bg-red-50 border border-red-300 text-red-800 font-semibold">
+                  {newMotorError}
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-semibold text-slate-700 mb-1">Asset Code *</label>
@@ -1485,6 +2136,103 @@ export const PowerBranchDetailView: React.FC<PowerBranchDetailViewProps> = ({
             </form>
           </div>
         </div>
+      )}
+
+      {/* TECHNICIAN INSPECTION MODAL */}
+      {inspectTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-xl shadow-2xl border border-slate-300 w-full max-w-md overflow-hidden">
+            <div className="bg-teal-700 text-white px-5 py-3 flex items-center justify-between">
+              <span className="font-bold text-sm">
+                Log Inspection ({inspectTarget.code})
+              </span>
+              <button
+                type="button"
+                onClick={() => setInspectTarget(null)}
+                className="text-white/80 hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <form onSubmit={handleSaveInspection} className="p-5 space-y-3 text-xs bg-slate-50">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">Clamp Load (A)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={inspLoad}
+                    onChange={(e) => setInspLoad(e.target.value)}
+                    className="w-full px-2.5 py-1.5 border border-slate-300 rounded bg-white font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">Condition</label>
+                  <select
+                    value={inspStatus}
+                    onChange={(e) => setInspStatus(e.target.value as EquipmentStatus)}
+                    className="w-full px-2.5 py-1.5 border border-slate-300 rounded bg-white"
+                  >
+                    <option value="Operational">Operational</option>
+                    <option value="Under Maintenance">Under Maintenance</option>
+                    <option value="Standby">Standby</option>
+                    <option value="Decommissioned">Decommissioned</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Inspection Notes</label>
+                <textarea
+                  rows={2}
+                  value={inspNotes}
+                  onChange={(e) => setInspNotes(e.target.value)}
+                  className="w-full px-2.5 py-1.5 border border-slate-300 rounded bg-white"
+                />
+              </div>
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Reason</label>
+                <input
+                  type="text"
+                  value={inspReason}
+                  onChange={(e) => setInspReason(e.target.value)}
+                  placeholder="Routine shift clamp reading"
+                  className="w-full px-2.5 py-1.5 border border-slate-300 rounded bg-white"
+                />
+              </div>
+              <div className="pt-2 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setInspectTarget(null)}
+                  className="px-3 py-1.5 rounded border border-slate-300 bg-white cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingInsp}
+                  className="px-4 py-1.5 rounded bg-teal-700 hover:bg-teal-800 text-white font-bold cursor-pointer"
+                >
+                  {savingInsp ? 'Saving...' : 'Save Inspection'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 3-PHASE IMMUTABLE MEASUREMENT MODAL */}
+      {measurementTarget && onRecordElectricalMeasurement && (
+        <LogMeasurementModal
+          assetId={measurementTarget.assetId}
+          assetKind={measurementTarget.assetKind}
+          assetCode={measurementTarget.assetCode}
+          assetName={measurementTarget.assetName}
+          nominalVoltageV={measurementTarget.nominalVoltageV}
+          targetNode={measurementTarget.targetNode}
+          currentUserName={currentUserName}
+          onClose={() => setMeasurementTarget(null)}
+          onSubmitMeasurement={onRecordElectricalMeasurement}
+        />
       )}
     </div>
   );

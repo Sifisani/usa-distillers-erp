@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Cpu,
   Plus,
@@ -35,7 +35,8 @@ import {
   ArrowRight,
   MoveRight,
   ArrowUpCircle,
-  AlertOctagon
+  AlertOctagon,
+  ClipboardCheck
 } from 'lucide-react';
 import {
   Equipment,
@@ -46,7 +47,18 @@ import {
   StarterType,
   EquipmentModificationLog,
   FeederPanelId,
-  PowerDistributionNode
+  PowerDistributionNode,
+  PowerConnection,
+  PowerEdgeRole,
+  PowerVoltageTier,
+  UserProfile,
+  ElectricalMeasurement,
+  ElectricalInspection,
+  ElectricalInspectionReview,
+  ElectricalJobCardPrefill,
+  InspectionAssetCategory,
+  InspectionReviewStatus,
+  InspectionTemplate
 } from '../../types';
 import { syncOfficialPlantEquipmentRegistry } from '../../services/equipmentService';
 import { PowerDistributionSLDView } from './PowerDistributionSLDView';
@@ -55,12 +67,34 @@ import {
   FEEDER_PANELS,
   DEFAULT_POWER_NODES
 } from '../../core/master-data/powerDistributionData';
+import {
+  isAuthorizedElectricalEngineer,
+  canEditEquipmentInspectionOnly,
+  canSubmitElectricalInspection
+} from '../../core/electrical/permissions';
+import { CreateElectricalMeasurementInput } from '../../core/electrical/loadCalculations';
+import {
+  DEFAULT_INSPECTION_TEMPLATES,
+  SubmitInspectionInput,
+  indexLatestInspectionsByAsset
+} from '../../core/electrical/inspections';
+import { ConditionBadge } from './sld/ConditionBadge';
+import {
+  ElectricalInspectionModal,
+  InspectionTargetAsset,
+  buildInspectionTargetFromEquipment
+} from './sld/ElectricalInspectionModal';
+import { InspectionDetailModal } from './sld/InspectionDetailModal';
 
 interface EquipmentViewProps {
   equipmentList: Equipment[];
   jobCards: JobCard[];
   powerNodes?: PowerDistributionNode[];
+  powerConnections?: PowerConnection[];
+  electricalMeasurements?: ElectricalMeasurement[];
   currentUserName?: string;
+  userRole?: UserProfile['role'] | null;
+  userEmail?: string | null;
   onUpdatePowerNode?: (
     node: PowerDistributionNode,
     updates: Partial<PowerDistributionNode>,
@@ -85,7 +119,51 @@ interface EquipmentViewProps {
       newValues?: Record<string, any>;
     }
   ) => Promise<void>;
+  onInspectUpdateEquipment?: (
+    equipment: Equipment,
+    inspection: {
+      loadCurrentAmps?: number;
+      status?: EquipmentStatus;
+      notes?: string;
+    },
+    audit: {
+      inspectedBy: string;
+      reason: string;
+    }
+  ) => Promise<void>;
+  onDeleteEquipment?: (equipment: Equipment) => Promise<void>;
+  onCreatePowerConnection?: (candidate: {
+    sourceNodeId: string;
+    targetNodeId: string;
+    voltageTier: PowerVoltageTier;
+    edgeRole: PowerEdgeRole;
+    label?: string;
+    reason: string;
+    createdBy: string;
+  }) => Promise<void>;
+  onDeletePowerConnection?: (connectionId: string) => Promise<void>;
+  onRecordElectricalMeasurement?: (
+    input: Omit<CreateElectricalMeasurementInput, 'recordedByUid'> & {
+      targetNode?: PowerDistributionNode;
+    }
+  ) => Promise<void>;
   onNewJobCardForEquipment: (equipment: Equipment) => void;
+  electricalInspections?: ElectricalInspection[];
+  electricalInspectionReviews?: ElectricalInspectionReview[];
+  inspectionTemplates?: Record<InspectionAssetCategory, InspectionTemplate>;
+  onSubmitElectricalInspection?: (
+    payload: Omit<SubmitInspectionInput, 'technicianId' | 'technicianName' | 'technicianRole'>
+  ) => Promise<void>;
+  onSubmitInspectionReview?: (params: {
+    inspectionId: string;
+    assetId: string;
+    decision: Exclude<InspectionReviewStatus, 'PENDING_REVIEW'>;
+    reviewNotes: string;
+  }) => Promise<void>;
+  onSaveInspectionTemplate?: (template: InspectionTemplate) => Promise<void>;
+  onRaiseJobCardFromInspection?: (prefill: ElectricalJobCardPrefill) => void;
+  onSelectJobCard?: (card: JobCard) => void;
+  onOpenElectricalDistribution?: (panelId?: FeederPanelId) => void;
   searchQuery: string;
 }
 
@@ -190,13 +268,51 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
   equipmentList,
   jobCards,
   powerNodes = DEFAULT_POWER_NODES,
+  powerConnections = [],
+  electricalMeasurements = [],
   currentUserName = 'Engineering Supervisor',
+  userRole = null,
+  userEmail = null,
   onUpdatePowerNode,
   onCreateEquipment,
   onModifyEquipment,
+  onInspectUpdateEquipment,
+  onDeleteEquipment,
+  onCreatePowerConnection,
+  onDeletePowerConnection,
+  onRecordElectricalMeasurement,
   onNewJobCardForEquipment,
+  electricalInspections = [],
+  electricalInspectionReviews = [],
+  inspectionTemplates = DEFAULT_INSPECTION_TEMPLATES,
+  onSubmitElectricalInspection,
+  onSubmitInspectionReview,
+  onSaveInspectionTemplate,
+  onRaiseJobCardFromInspection,
+  onSelectJobCard,
+  onOpenElectricalDistribution,
   searchQuery
 }) => {
+  const isEngineer = useMemo(
+    () => isAuthorizedElectricalEngineer(userRole, userEmail),
+    [userRole, userEmail]
+  );
+  const canInspectOnly = useMemo(
+    () => canEditEquipmentInspectionOnly(userRole),
+    [userRole]
+  );
+  const canSubmitStructuredInspection = useMemo(
+    () => canSubmitElectricalInspection(userRole, userEmail),
+    [userRole, userEmail]
+  );
+  const conditionSummaries = useMemo(
+    () => indexLatestInspectionsByAsset(electricalInspections, electricalInspectionReviews),
+    [electricalInspections, electricalInspectionReviews]
+  );
+  const [conditionDetailTarget, setConditionDetailTarget] = useState<InspectionTargetAsset | null>(null);
+  const [conditionFormTarget, setConditionFormTarget] = useState<InspectionTargetAsset | null>(null);
+  const [correctsConditionInspection, setCorrectsConditionInspection] = useState<ElectricalInspection | null>(null);
+
   const [activeSection, setActiveSection] = useState<PlantSectionId>('ALL');
   const [selectedSubArea, setSelectedSubArea] = useState<string>('ALL');
   const [selectedStatus, setSelectedStatus] = useState<string>('ALL');
@@ -208,6 +324,15 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
   const [detailTab, setDetailTab] = useState<'work_orders' | 'lineage'>('work_orders');
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
+
+  // Sync open equipment detail modal if Firestore updates the record (e.g. from SLD)
+  useEffect(() => {
+    if (!selectedEquipmentForDetail) return;
+    const fresh = equipmentList.find(eq => eq.id === selectedEquipmentForDetail.id);
+    if (fresh && fresh !== selectedEquipmentForDetail) {
+      setSelectedEquipmentForDetail(fresh);
+    }
+  }, [equipmentList, selectedEquipmentForDetail]);
 
   // New Equipment Form State
   const [code, setCode] = useState('');
@@ -222,6 +347,59 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
   const [plantArea, setPlantArea] = useState<PlantArea>('Boiler 1');
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  // Technician Inspection Modal State
+  const [inspectTarget, setInspectTarget] = useState<Equipment | null>(null);
+  const [inspectLoadAmps, setInspectLoadAmps] = useState<string>('');
+  const [inspectStatus, setInspectStatus] = useState<EquipmentStatus>('Operational');
+  const [inspectNotes, setInspectNotes] = useState<string>('');
+  const [inspectReason, setInspectReason] = useState<string>('');
+  const [inspectSaving, setInspectSaving] = useState<boolean>(false);
+  const [inspectError, setInspectError] = useState<string | null>(null);
+
+  const handleOpenInspectModal = (eq: Equipment) => {
+    setInspectTarget(eq);
+    setInspectLoadAmps(eq.loadCurrentAmps !== undefined ? String(eq.loadCurrentAmps) : '');
+    setInspectStatus(eq.status);
+    setInspectNotes(eq.notes || '');
+    setInspectReason('Routine clamp-meter & condition inspection');
+    setInspectError(null);
+  };
+
+  const handleSaveInspection = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inspectTarget || !onInspectUpdateEquipment) return;
+    if (!inspectReason.trim()) {
+      setInspectError('Inspection note / reason is required.');
+      return;
+    }
+    setInspectSaving(true);
+    setInspectError(null);
+    try {
+      const parsedAmps = inspectLoadAmps.trim() ? Number(inspectLoadAmps) : undefined;
+      if (parsedAmps !== undefined && (Number.isNaN(parsedAmps) || parsedAmps < 0)) {
+        throw new Error('Measured current must be a valid non-negative number.');
+      }
+      await onInspectUpdateEquipment(
+        inspectTarget,
+        {
+          loadCurrentAmps: parsedAmps,
+          status: inspectStatus,
+          notes: inspectNotes.trim()
+        },
+        {
+          inspectedBy: currentUserName,
+          reason: inspectReason.trim()
+        }
+      );
+      setInspectTarget(null);
+    } catch (err: any) {
+      setInspectError(err?.message || 'Failed to record inspection.');
+    } finally {
+      setInspectSaving(false);
+    }
+  };
 
   // Lifecycle Edit / Modification State
   const [isEditModalOpen, setIsEditModalOpen] = useState<boolean>(false);
@@ -301,6 +479,7 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
         status: editStatus,
         criticality: editCriticality,
         feederPanel: editFeederPanel,
+        feederNodeId: panelMeta?.breakerId,
         transformerSource: panelMeta?.transformerSource,
         feederBreaker: panelMeta?.breakerCode,
         notes: editNotes.trim()
@@ -536,8 +715,13 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
 
   const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isEngineer) {
+      setCreateError('Unauthorized: Only authorized engineering supervisors/managers may register equipment.');
+      return;
+    }
     if (!code || !name) return;
     setSubmitting(true);
+    setCreateError(null);
     try {
       await onCreateEquipment({
         code,
@@ -558,8 +742,9 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
       setNotes('');
       setPowerKw('');
       setOverloadAmps('');
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      setCreateError(err?.message || 'Failed to register plant asset.');
     } finally {
       setSubmitting(false);
     }
@@ -754,23 +939,37 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
       <div className="bg-white p-3 rounded-md border border-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3 text-xs">
         {/* Left: Actions */}
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={() => setIsModalOpen(true)}
-            className="px-3 py-1.5 rounded bg-[#714B67] hover:bg-[#5b3c53] text-white text-xs font-semibold shadow-xs flex items-center gap-1.5 transition cursor-pointer"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Add Equipment</span>
-          </button>
+          {isEngineer && (
+            <>
+              <button
+                onClick={() => {
+                  setCreateError(null);
+                  setIsModalOpen(true);
+                }}
+                className="px-3 py-1.5 rounded bg-[#714B67] hover:bg-[#5b3c53] text-white text-xs font-semibold shadow-xs flex items-center gap-1.5 transition cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Add Equipment</span>
+              </button>
 
-          <button
-            onClick={handleSyncMaster}
-            disabled={isSyncing}
-            className="px-3 py-1.5 rounded border border-purple-200 bg-purple-50 hover:bg-purple-100 text-[#714B67] text-xs font-semibold transition cursor-pointer flex items-center gap-1.5"
-            title="Populates all 105 active assets from the Electrical Plant Checklist"
-          >
-            <RotateCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-            <span>{isSyncing ? 'Syncing...' : 'Sync Master Checklist (105 Assets)'}</span>
-          </button>
+              <button
+                onClick={handleSyncMaster}
+                disabled={isSyncing}
+                className="px-3 py-1.5 rounded border border-purple-200 bg-purple-50 hover:bg-purple-100 text-[#714B67] text-xs font-semibold transition cursor-pointer flex items-center gap-1.5"
+                title="Populates all 105 active assets from the Electrical Plant Checklist"
+              >
+                <RotateCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                <span>{isSyncing ? 'Syncing...' : 'Sync Master Checklist (105 Assets)'}</span>
+              </button>
+            </>
+          )}
+
+          {!isEngineer && (
+            <span className="px-2.5 py-1 rounded border border-slate-200 bg-slate-50 text-slate-600 text-[11px] font-medium flex items-center gap-1">
+              <ShieldCheck className="w-3.5 h-3.5 text-slate-500" />
+              Technician Read / Inspection Mode
+            </span>
+          )}
 
           <div className="text-xs text-slate-500 hidden md:block border-l border-slate-200 pl-3">
             Showing <strong>{filteredList.length}</strong> of <strong>{equipmentList.length}</strong> Plant Assets
@@ -829,6 +1028,10 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
             </button>
             <button
               onClick={() => {
+                if (onOpenElectricalDistribution) {
+                  onOpenElectricalDistribution();
+                  return;
+                }
                 setTargetFeederPanel(null);
                 setViewMode('sld');
               }}
@@ -878,7 +1081,15 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
                       <span className="font-mono font-bold text-xs text-slate-900 bg-slate-100 px-2 py-0.5 rounded border border-slate-200 group-hover:text-[#714B67]">
                         {eq.code}
                       </span>
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                        <ConditionBadge
+                          condition={conditionSummaries.get(eq.id)?.condition || 'NOT_INSPECTED'}
+                          compact
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setConditionDetailTarget(buildInspectionTargetFromEquipment(eq));
+                          }}
+                        />
                         <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${getStatusBadge(eq.status)}`}>
                           {eq.status}
                         </span>
@@ -910,6 +1121,10 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
+                            if (onOpenElectricalDistribution) {
+                              onOpenElectricalDistribution(feeder.feederPanel);
+                              return;
+                            }
                             setTargetFeederPanel(feeder.feederPanel);
                             setViewMode('sld');
                           }}
@@ -972,13 +1187,33 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
                     </div>
 
                     <div className="flex items-center gap-1.5">
-                      <button
-                        onClick={() => handleOpenEditModal(eq, 'UPGRADE')}
-                        className="p-1 rounded border border-slate-200 text-slate-500 hover:text-[#714B67] hover:bg-purple-50 transition cursor-pointer"
-                        title="Edit Machine Lifecycle (Upgrade, Swap, Relocate, Rename, Decommission)"
-                      >
-                        <Edit3 className="w-3.5 h-3.5" />
-                      </button>
+                      {isEngineer ? (
+                        <button
+                          onClick={() => handleOpenEditModal(eq, 'UPGRADE')}
+                          className="p-1 rounded border border-slate-200 text-slate-500 hover:text-[#714B67] hover:bg-purple-50 transition cursor-pointer"
+                          title="Edit Machine Lifecycle (Upgrade, Swap, Relocate, Rename, Decommission)"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                        </button>
+                      ) : canInspectOnly && onInspectUpdateEquipment ? (
+                        <button
+                          onClick={() => handleOpenInspectModal(eq)}
+                          className="p-1 rounded border border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100 transition cursor-pointer"
+                          title="Log Clamp-Meter Current & Condition Inspection"
+                        >
+                          <Gauge className="w-3.5 h-3.5" />
+                        </button>
+                      ) : null}
+                      {onSubmitElectricalInspection && (
+                        <button
+                          type="button"
+                          onClick={() => setConditionDetailTarget(buildInspectionTargetFromEquipment(eq))}
+                          className="p-1 rounded border border-indigo-200 bg-indigo-50 text-indigo-800 hover:bg-indigo-100 transition cursor-pointer"
+                          title="Electrical Condition & Inspection History"
+                        >
+                          <ClipboardCheck className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                       <button
                         onClick={() => onNewJobCardForEquipment(eq)}
                         className="px-2.5 py-1 rounded bg-[#714B67] hover:bg-[#5b3c53] text-white font-semibold text-xs transition cursor-pointer flex items-center gap-1 shadow-xs"
@@ -1059,6 +1294,10 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
                         return (
                           <button
                             onClick={() => {
+                              if (onOpenElectricalDistribution) {
+                                onOpenElectricalDistribution(feeder.feederPanel);
+                                return;
+                              }
                               setTargetFeederPanel(feeder.feederPanel);
                               setViewMode('sld');
                             }}
@@ -1091,21 +1330,48 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
                       )}
                     </td>
 
-                    <td className="py-2.5 px-3">
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${getStatusBadge(eq.status)}`}>
-                        {eq.status}
-                      </span>
+                    <td className="py-2.5 px-3" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex flex-col items-start gap-1">
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${getStatusBadge(eq.status)}`}>
+                          {eq.status}
+                        </span>
+                        <ConditionBadge
+                          condition={conditionSummaries.get(eq.id)?.condition || 'NOT_INSPECTED'}
+                          compact
+                          onClick={() => setConditionDetailTarget(buildInspectionTargetFromEquipment(eq))}
+                        />
+                      </div>
                     </td>
 
                     <td className="py-2.5 px-3 text-right" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-1.5">
-                        <button
-                          onClick={() => handleOpenEditModal(eq, 'UPGRADE')}
-                          className="p-1 rounded border border-slate-200 text-slate-500 hover:text-[#714B67] hover:bg-purple-50 transition cursor-pointer"
-                          title="Edit Machine Lifecycle (Upgrade, Swap, Relocate, Rename, Decommission)"
-                        >
-                          <Edit3 className="w-3.5 h-3.5" />
-                        </button>
+                        {onSubmitElectricalInspection && (
+                          <button
+                            type="button"
+                            onClick={() => setConditionDetailTarget(buildInspectionTargetFromEquipment(eq))}
+                            className="p-1 rounded border border-indigo-200 bg-indigo-50 text-indigo-800 hover:bg-indigo-100 transition cursor-pointer"
+                            title="Electrical Condition & Inspection History"
+                          >
+                            <ClipboardCheck className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {isEngineer ? (
+                          <button
+                            onClick={() => handleOpenEditModal(eq, 'UPGRADE')}
+                            className="p-1 rounded border border-slate-200 text-slate-500 hover:text-[#714B67] hover:bg-purple-50 transition cursor-pointer"
+                            title="Edit Machine Lifecycle (Upgrade, Swap, Relocate, Rename, Decommission)"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+                        ) : canInspectOnly && onInspectUpdateEquipment ? (
+                          <button
+                            onClick={() => handleOpenInspectModal(eq)}
+                            className="p-1 rounded border border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100 transition cursor-pointer"
+                            title="Log Clamp-Meter Current & Condition Inspection"
+                          >
+                            <Gauge className="w-3.5 h-3.5" />
+                          </button>
+                        ) : null}
                         <button
                           onClick={() => onNewJobCardForEquipment(eq)}
                           className="px-2.5 py-1 rounded bg-[#714B67] hover:bg-[#5b3c53] text-white text-[11px] font-semibold cursor-pointer shadow-2xs"
@@ -1126,9 +1392,13 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
       {viewMode === 'sld' && (
         <PowerDistributionSLDView
           powerNodes={powerNodes.length > 0 ? powerNodes : DEFAULT_POWER_NODES}
+          powerConnections={powerConnections}
+          electricalMeasurements={electricalMeasurements}
           equipmentList={equipmentList}
           jobCards={jobCards}
           currentUserName={currentUserName}
+          userRole={userRole}
+          userEmail={userEmail}
           initialSelectedPanel={targetFeederPanel}
           onUpdatePowerNode={async (node, updates, audit) => {
             if (onUpdatePowerNode) {
@@ -1136,9 +1406,22 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
             }
           }}
           onModifyEquipment={onModifyEquipment}
+          onInspectUpdateEquipment={onInspectUpdateEquipment}
+          onDeleteEquipment={onDeleteEquipment}
+          onCreatePowerConnection={onCreatePowerConnection}
+          onDeletePowerConnection={onDeletePowerConnection}
+          onRecordElectricalMeasurement={onRecordElectricalMeasurement}
           onCreateEquipment={onCreateEquipment}
           onSelectEquipment={(eq) => setSelectedEquipmentForDetail(eq)}
           onNewJobCardForEquipment={(eq) => onNewJobCardForEquipment(eq)}
+          electricalInspections={electricalInspections}
+          electricalInspectionReviews={electricalInspectionReviews}
+          inspectionTemplates={inspectionTemplates}
+          onSubmitElectricalInspection={onSubmitElectricalInspection}
+          onSubmitInspectionReview={onSubmitInspectionReview}
+          onSaveInspectionTemplate={onSaveInspectionTemplate}
+          onRaiseJobCardFromInspection={onRaiseJobCardFromInspection}
+          onSelectJobCard={onSelectJobCard}
         />
       )}
 
@@ -1181,10 +1464,17 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
               </div>
 
               <div className="p-2.5 rounded bg-slate-50 border border-slate-200">
-                <span className="text-[10px] text-slate-400 uppercase font-bold block">Operating Status</span>
-                <span className={`inline-block px-2 py-0.2 rounded-full font-bold text-[10px] border ${getStatusBadge(selectedEquipmentForDetail.status)}`}>
-                  {selectedEquipmentForDetail.status}
-                </span>
+                <span className="text-[10px] text-slate-400 uppercase font-bold block">Operating Status & Condition</span>
+                <div className="flex flex-wrap items-center gap-1 mt-0.5">
+                  <span className={`inline-block px-2 py-0.2 rounded-full font-bold text-[10px] border ${getStatusBadge(selectedEquipmentForDetail.status)}`}>
+                    {selectedEquipmentForDetail.status}
+                  </span>
+                  <ConditionBadge
+                    condition={conditionSummaries.get(selectedEquipmentForDetail.id)?.condition || 'NOT_INSPECTED'}
+                    compact
+                    onClick={() => setConditionDetailTarget(buildInspectionTargetFromEquipment(selectedEquipmentForDetail))}
+                  />
+                </div>
               </div>
 
               <div className="p-2.5 rounded bg-purple-50 border border-purple-200">
@@ -1265,9 +1555,13 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
                     </span>
                     <button
                       onClick={() => {
+                        setSelectedEquipmentForDetail(null);
+                        if (onOpenElectricalDistribution) {
+                          onOpenElectricalDistribution(feeder.feederPanel);
+                          return;
+                        }
                         setTargetFeederPanel(feeder.feederPanel);
                         setViewMode('sld');
-                        setSelectedEquipmentForDetail(null);
                       }}
                       className="px-2.5 py-1 text-[11px] font-semibold bg-amber-600 hover:bg-amber-700 text-white rounded transition flex items-center gap-1 cursor-pointer shadow-xs"
                     >
@@ -1448,16 +1742,41 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
                 >
                   Close
                 </button>
-                <button
-                  onClick={() => {
-                    const eq = selectedEquipmentForDetail;
-                    handleOpenEditModal(eq, 'UPGRADE');
-                  }}
-                  className="px-3 py-1.5 rounded border border-purple-200 bg-purple-50 hover:bg-purple-100 text-[#714B67] text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Edit3 className="w-3.5 h-3.5" />
-                  <span>Edit / Swap Asset</span>
-                </button>
+                {isEngineer ? (
+                  <button
+                    onClick={() => {
+                      const eq = selectedEquipmentForDetail;
+                      handleOpenEditModal(eq, 'UPGRADE');
+                    }}
+                    className="px-3 py-1.5 rounded border border-purple-200 bg-purple-50 hover:bg-purple-100 text-[#714B67] text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span>Edit / Swap Asset</span>
+                  </button>
+                ) : canInspectOnly && onInspectUpdateEquipment ? (
+                  <button
+                    onClick={() => {
+                      const eq = selectedEquipmentForDetail;
+                      handleOpenInspectModal(eq);
+                    }}
+                    className="px-3 py-1.5 rounded border border-sky-200 bg-sky-50 hover:bg-sky-100 text-sky-700 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Gauge className="w-3.5 h-3.5" />
+                    <span>Log Inspection</span>
+                  </button>
+                ) : null}
+                {canSubmitStructuredInspection && onSubmitElectricalInspection && (
+                  <button
+                    type="button"
+                    onClick={() => setConditionDetailTarget(buildInspectionTargetFromEquipment(selectedEquipmentForDetail))}
+                    className="px-3 py-1.5 rounded border border-indigo-300 bg-indigo-50 hover:bg-indigo-100 text-indigo-900 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <ClipboardCheck className="w-3.5 h-3.5" />
+                    <span>
+                      Electrical Inspection ({conditionSummaries.get(selectedEquipmentForDetail.id)?.totalInspections ?? 0})
+                    </span>
+                  </button>
+                )}
               </div>
 
               <button
@@ -1922,6 +2241,12 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
                 ></textarea>
               </div>
 
+              {createError && (
+                <div className="p-2 rounded bg-rose-50 border border-rose-200 text-rose-800 text-[11px] font-semibold">
+                  {createError}
+                </div>
+              )}
+
               <div className="pt-2 flex justify-end gap-2">
                 <button
                   type="button"
@@ -1942,6 +2267,166 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* TECHNICIAN CLAMP-METER & CONDITION INSPECTION MODAL */}
+      {inspectTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 overflow-y-auto">
+          <div className="bg-white rounded-lg shadow-2xl border border-slate-300 w-full max-w-md overflow-hidden">
+            <div className="bg-sky-800 text-white px-5 py-3 flex items-center justify-between">
+              <div>
+                <span className="font-bold text-sm block">Field Electrical & Condition Inspection</span>
+                <span className="text-[11px] text-sky-200 font-mono">
+                  {inspectTarget.code} • {inspectTarget.name}
+                </span>
+              </div>
+              <button
+                onClick={() => setInspectTarget(null)}
+                className="text-white/70 hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveInspection} className="p-5 space-y-3.5 text-xs bg-[#f8f9fa]">
+              <div className="p-2 rounded bg-sky-50 border border-sky-200 text-[11px] text-sky-900">
+                Permitted technician update: logs clamp-meter load reading, operating status, and inspection notes without altering electrical topology.
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-700 font-medium mb-1">Clamp Load (A)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    value={inspectLoadAmps}
+                    onChange={(e) => setInspectLoadAmps(e.target.value)}
+                    placeholder="e.g. 24.5"
+                    className="w-full px-2.5 py-1.5 border border-slate-300 rounded bg-white font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-700 font-medium mb-1">Status</label>
+                  <select
+                    value={inspectStatus}
+                    onChange={(e) => setInspectStatus(e.target.value as EquipmentStatus)}
+                    className="w-full px-2.5 py-1.5 border border-slate-300 rounded bg-white"
+                  >
+                    <option value="Operational">Operational</option>
+                    <option value="Under Maintenance">Under Maintenance</option>
+                    <option value="Standby">Standby</option>
+                    <option value="Decommissioned">Decommissioned</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-700 font-medium mb-1">Inspection Notes</label>
+                <textarea
+                  rows={2}
+                  value={inspectNotes}
+                  onChange={(e) => setInspectNotes(e.target.value)}
+                  className="w-full px-2.5 py-1.5 border border-slate-300 rounded bg-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-700 font-medium mb-1">Inspection Reason *</label>
+                <input
+                  type="text"
+                  required
+                  value={inspectReason}
+                  onChange={(e) => setInspectReason(e.target.value)}
+                  className="w-full px-2.5 py-1.5 border border-slate-300 rounded bg-white"
+                />
+              </div>
+
+              {inspectError && (
+                <div className="p-2 rounded bg-rose-50 border border-rose-200 text-rose-800 text-[11px] font-semibold">
+                  {inspectError}
+                </div>
+              )}
+
+              <div className="pt-2 flex justify-end gap-2 border-t border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setInspectTarget(null)}
+                  className="px-3 py-1.5 rounded border border-slate-300 bg-white hover:bg-slate-50 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={inspectSaving}
+                  className="px-4 py-1.5 rounded bg-sky-700 hover:bg-sky-800 text-white font-semibold cursor-pointer"
+                >
+                  {inspectSaving ? 'Saving...' : 'Save Inspection'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* STRUCTURED ELECTRICAL INSPECTION TIMELINE & FORM MODALS */}
+      <InspectionDetailModal
+        isOpen={Boolean(conditionDetailTarget)}
+        target={conditionDetailTarget}
+        summary={
+          conditionDetailTarget
+            ? conditionSummaries.get(conditionDetailTarget.assetId) || null
+            : null
+        }
+        allReviews={electricalInspectionReviews}
+        equipmentList={equipmentList}
+        jobCards={jobCards}
+        currentUserName={currentUserName}
+        userRole={userRole}
+        userEmail={userEmail}
+        onClose={() => setConditionDetailTarget(null)}
+        onStartNewInspection={(target) => {
+          setCorrectsConditionInspection(null);
+          setConditionFormTarget(target);
+        }}
+        onStartAmendment={(target, insp) => {
+          setCorrectsConditionInspection(insp);
+          setConditionFormTarget(target);
+        }}
+        onSubmitReview={async (params) => {
+          if (onSubmitInspectionReview) {
+            await onSubmitInspectionReview(params);
+          }
+        }}
+        onRaiseJobCard={(prefill) => {
+          setConditionDetailTarget(null);
+          setSelectedEquipmentForDetail(null);
+          if (onRaiseJobCardFromInspection) {
+            onRaiseJobCardFromInspection(prefill);
+          } else if (prefill.equipmentId) {
+            const eq = equipmentList.find((e) => e.id === prefill.equipmentId);
+            if (eq) onNewJobCardForEquipment(eq);
+          }
+        }}
+      />
+
+      <ElectricalInspectionModal
+        isOpen={Boolean(conditionFormTarget)}
+        target={conditionFormTarget}
+        templates={inspectionTemplates}
+        currentUserName={currentUserName}
+        userRole={userRole}
+        userEmail={userEmail}
+        correctsInspection={correctsConditionInspection}
+        onClose={() => {
+          setConditionFormTarget(null);
+          setCorrectsConditionInspection(null);
+        }}
+        onSubmitInspection={async (payload) => {
+          if (onSubmitElectricalInspection) {
+            await onSubmitElectricalInspection(payload);
+          }
+        }}
+      />
     </div>
   );
 };

@@ -20,8 +20,10 @@ import {
   savePlantReport,
   subscribeDailyPlantReports
 } from '../../services/plantReportService';
+import { useAuth } from '../../context/AuthContext';
 
 export const DailyPlantReportView: React.FC = () => {
+  const { currentUser } = useAuth();
   const [reports, setReports] = useState<DailyPlantReport[]>([OFFICIAL_BASELINE_REPORT]);
   const [selectedReportDate, setSelectedReportDate] = useState<string>('2026-09-18');
   const [activeReport, setActiveReport] = useState<DailyPlantReport>(OFFICIAL_BASELINE_REPORT);
@@ -30,6 +32,7 @@ export const DailyPlantReportView: React.FC = () => {
   const [isEditing, setIsEditing] = useState(false);
 
   useEffect(() => {
+    if (!currentUser) return;
     const unsub = subscribeDailyPlantReports((data) => {
       setReports(data);
       const found = data.find((r) => r.reportDate === selectedReportDate);
@@ -41,7 +44,7 @@ export const DailyPlantReportView: React.FC = () => {
       }
     });
     return () => unsub();
-  }, [selectedReportDate]);
+  }, [selectedReportDate, currentUser]);
 
   // Handle date change
   const handleDateSelect = (date: string) => {

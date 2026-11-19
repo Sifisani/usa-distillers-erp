@@ -10,7 +10,8 @@ import {
   Users,
   Settings,
   Lock,
-  Grid
+  Grid,
+  Zap
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -20,6 +21,7 @@ interface SidebarProps {
   emergencyCount: number;
   pendingSparesCount: number;
   paperSlipsCount?: number;
+  electricalAlertCount?: number;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -28,7 +30,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   openCount,
   emergencyCount,
   pendingSparesCount,
-  paperSlipsCount = 0
+  paperSlipsCount = 0,
+  electricalAlertCount = 0
 }) => {
   // Phase 1: Core Functional Job Card & Maintenance Suite
   const coreJobCardApps = [
@@ -47,6 +50,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
       badge: '105',
       badgeColor: 'bg-emerald-100 text-emerald-800',
       desc: 'Motors, Pumps, Specs & History'
+    },
+    {
+      id: 'electrical',
+      label: 'Electrical Distribution',
+      icon: Zap,
+      badge: electricalAlertCount > 0 ? electricalAlertCount : null,
+      badgeColor: 'bg-amber-100 text-amber-900 border border-amber-300 font-bold',
+      desc: 'Single-Line Diagram, Inspections & Load Monitoring'
     },
     {
       id: 'spares',

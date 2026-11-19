@@ -99,6 +99,10 @@ export interface JobCard {
   departmentCategory: string;
   equipmentName: string;
   equipmentId?: string;
+  equipmentCode?: string;
+  electricalFeeder?: string;
+  inspectionId?: string;
+  inspectionReference?: string;
   priority: Priority;
   status: JobCardStatus;
   description: string;
@@ -419,15 +423,208 @@ export interface Equipment {
   plantArea?: PlantArea;
 
   // Power Distribution Single-Line Diagram (SLD) mapping
+  feederNodeId?: string;
   feederPanel?: FeederPanelId | string;
   transformerSource?: TransformerSource;
   feederBreaker?: string;
+
+  // Task 4: Load Classification & Measured Inspection Metadata
+  loadMeasurementSource?: LoadDataSource;
+  loadMeasuredAt?: string;
+  measuredPowerFactor?: number;
 
   // Asset Lineage & Engineering Revision Log
   modificationHistory?: EquipmentModificationLog[];
 
   createdAt: string;
   updatedAt: string;
+}
+
+export type LoadDataSource = 'NAMEPLATE' | 'MEASURED' | 'METERED' | 'ESTIMATED';
+
+export type MeasurementPhase =
+  | '3PH_TOTAL'
+  | '3PH_AVG'
+  | 'L1'
+  | 'L2'
+  | 'L3'
+  | 'L1_L2'
+  | 'L2_L3'
+  | 'L3_L1';
+
+export type ElectricalMeasurementType =
+  | 'CURRENT'
+  | 'VOLTAGE'
+  | 'POWER'
+  | 'POWER_FACTOR'
+  | 'FREQUENCY'
+  | 'ENERGY'
+  | 'COMPREHENSIVE_PANEL';
+
+export interface ElectricalMeasurementValues {
+  currentAmps?: number;
+  currentL1Amps?: number;
+  currentL2Amps?: number;
+  currentL3Amps?: number;
+  voltageV?: number;
+  voltageL1L2V?: number;
+  voltageL2L3V?: number;
+  voltageL3L1V?: number;
+  activePowerKw?: number;
+  apparentPowerKva?: number;
+  reactivePowerKvar?: number;
+  powerFactor?: number;
+  frequencyHz?: number;
+  energyKwh?: number;
+}
+
+export interface ElectricalMeasurement {
+  id: string;
+  assetId: string;
+  assetKind: 'POWER_NODE' | 'EQUIPMENT';
+  assetCode?: string;
+  measurementType: ElectricalMeasurementType;
+  phase: MeasurementPhase;
+  unit: string;
+  source: 'MEASURED' | 'METERED';
+  values: ElectricalMeasurementValues;
+  timestamp: string;
+  recordedBy: string;
+  recordedByUid: string;
+  notes?: string;
+  createdAt: string;
+}
+
+export interface ElectricalAlertThresholds {
+  transformerHighLoadPct: number;
+  transformerCriticalLoadPct: number;
+  breakerWarningPct: number;
+  breakerCriticalPct: number;
+  phaseImbalanceWarnPct: number;
+  voltageDeviationWarnPct: number;
+  voltageDeviationCriticalPct: number;
+  minPowerFactorWarn: number;
+}
+
+export type MaintenanceCondition =
+  | 'HEALTHY'
+  | 'ATTENTION_REQUIRED'
+  | 'FAULT_DETECTED'
+  | 'UNDER_MAINTENANCE'
+  | 'ISOLATED'
+  | 'DECOMMISSIONED'
+  | 'NOT_INSPECTED';
+
+export type InspectionAssetCategory =
+  | 'CIRCUIT_BREAKER'
+  | 'TRANSFORMER'
+  | 'MOTOR'
+  | 'MCC_DB';
+
+export type InspectionChecklistResult = 'PASS' | 'ATTENTION' | 'FAIL' | 'NA';
+
+export interface InspectionChecklistItemSpec {
+  id: string;
+  label: string;
+  guidance?: string;
+  required: boolean;
+  defaultPriorityOnFail?: Priority;
+}
+
+export interface InspectionTemplate {
+  id: InspectionAssetCategory;
+  category: InspectionAssetCategory;
+  title: string;
+  description: string;
+  version: number;
+  items: InspectionChecklistItemSpec[];
+  updatedBy?: string;
+  updatedByUid?: string;
+  updatedAt?: string;
+}
+
+export interface InspectionChecklistResponse {
+  itemId: string;
+  label: string;
+  result: InspectionChecklistResult;
+  notes?: string;
+}
+
+export interface InspectionPhotoAttachment {
+  id: string;
+  name: string;
+  contentType: string;
+  sizeBytes: number;
+  dataUrl: string;
+  capturedAt: string;
+}
+
+export type InspectionReviewStatus = 'PENDING_REVIEW' | 'APPROVED' | 'ACTION_REQUIRED';
+
+export interface ElectricalInspection {
+  id: string;
+  inspectionNumber: string;
+  assetId: string;
+  assetKind: 'POWER_NODE' | 'EQUIPMENT';
+  assetCode: string;
+  assetName: string;
+  assetCategory: InspectionAssetCategory;
+  plantArea: string;
+  electricalFeeder: string;
+  conditionAssessment: MaintenanceCondition;
+  operatingStateSnapshot?: string;
+  templateId: InspectionAssetCategory;
+  templateVersion: number;
+  checklistResults: InspectionChecklistResponse[];
+  measurements?: ElectricalMeasurementValues;
+  measurementSource?: 'MEASURED' | 'METERED';
+  insulationResistanceMohm?: number;
+  windingTempC?: number;
+  ambientTempC?: number;
+  observations: string;
+  photos: InspectionPhotoAttachment[];
+  recommendations: string;
+  followUpRequired: boolean;
+  followUpAction?: string;
+  recommendedPriority?: Priority;
+  technicianId: string;
+  technicianName: string;
+  technicianRole: UserProfile['role'];
+  inspectedAt: string;
+  createdAt: string;
+  correctsInspectionId?: string;
+  amendmentReason?: string;
+  idempotencyKey?: string;
+}
+
+export interface ElectricalInspectionReview {
+  id: string;
+  inspectionId: string;
+  assetId: string;
+  decision: Exclude<InspectionReviewStatus, 'PENDING_REVIEW'>;
+  reviewNotes: string;
+  reviewerUid: string;
+  reviewerName: string;
+  reviewerRole: UserProfile['role'];
+  reviewedAt: string;
+  createdAt: string;
+}
+
+export interface ElectricalJobCardPrefill {
+  equipmentId?: string;
+  equipmentCode?: string;
+  equipmentName: string;
+  department?: string;
+  departmentCategory?: string;
+  plantArea?: string;
+  electricalFeeder?: string;
+  description: string;
+  priority: Priority;
+  inspectionId?: string;
+  inspectionReference?: string;
+  dangerTagRequired?: boolean;
+  dangerTagNumber?: string;
+  equipmentSpecs?: JobCard['equipmentSpecs'];
 }
 
 export type TransformerSource = 'Tx1' | 'Tx2' | 'Tx3';
@@ -466,6 +663,75 @@ export type BreakerType =
 
 export type BreakerOperatingState = 'CLOSED' | 'OPEN' | 'TRIPPED' | 'DECOMMISSIONED';
 
+export type PowerVoltageTier = '11kV' | '6.3kV' | '400V' | '415V' | '420V';
+
+export type EnergizationStatus =
+  | 'ENERGIZED'
+  | 'DE_ENERGIZED'
+  | 'DECOMMISSIONED'
+  | 'FAULT_BACKFEED';
+
+export type PowerEdgeRole =
+  | 'PRIMARY_FEED'
+  | 'SUB_FEED'
+  | 'STANDBY_FEED'
+  | 'INTERLOCK_TIE';
+
+export type MappingConfidence =
+  | 'EXPLICIT'
+  | 'AREA_RULE'
+  | 'NAME_HEURISTIC'
+  | 'UNASSIGNED';
+
+export interface PowerEdgeSpec {
+  id: string;
+  source: string;
+  target: string;
+  sourceHandle?: string;
+  targetHandle?: string;
+  voltageTier: PowerVoltageTier;
+  edgeRole: PowerEdgeRole;
+  /** Nodes that must be CLOSED for power to conduct across this edge */
+  gatedByNodeIds?: string[];
+  label?: string;
+}
+
+export interface ElectricalTerminalSpec {
+  id: string;
+  label: string;
+  side: 'top' | 'bottom' | 'left' | 'right';
+  voltageTier: PowerVoltageTier;
+}
+
+export interface PowerConnection {
+  id: string;
+  sourceNodeId: string;
+  targetNodeId: string;
+  sourceHandle?: string;
+  targetHandle?: string;
+  voltageTier: PowerVoltageTier;
+  edgeRole: PowerEdgeRole;
+  label?: string;
+  isAuthoritative?: boolean;
+  approvedBy?: string;
+  approvedAt?: string;
+  createdBy?: string;
+  createdAt: string;
+  updatedAt: string;
+  modificationHistory?: EquipmentModificationLog[];
+}
+
+export interface LogicalMccGroup {
+  id: string;
+  panelId: FeederPanelId;
+  groupType: 'MCC' | 'DB';
+  incomingBreakerId: string;
+  internalBusbarId: string;
+  internalBusbarLabel: string;
+  nominalVoltage: string;
+  busbarRatedAmps?: number;
+}
+
 export interface PowerDistributionNode {
   id: string;
   code: string;
@@ -474,7 +740,11 @@ export interface PowerDistributionNode {
   groupSection: 'OLD_TURBINE' | 'EEC_SUPPLY' | 'NEW_TURBINE' | 'HV_BUS' | 'TX1' | 'TX2' | 'TX3';
   transformerSource?: TransformerSource | 'HV_11KV';
   parentNodeId?: string;
+  sourceNodeIds?: string[];
   feederPanelId?: FeederPanelId;
+  nominalVoltageV?: number;
+  version?: number;
+  terminals?: ElectricalTerminalSpec[];
 
   // Circuit breaker & switchgear attributes (editable)
   brand: string;
@@ -484,6 +754,7 @@ export interface PowerDistributionNode {
   ratedAmps: number | null;
   tripSettingAmps?: number | null;
   measuredLoadAmps?: number | null;
+  measuredLoadSource?: 'MEASURED' | 'METERED';
   measuredLoadUpdatedAt?: string;
   operatingState: BreakerOperatingState;
 
@@ -507,6 +778,8 @@ export interface PowerDistributionNode {
   modificationHistory?: EquipmentModificationLog[];
   updatedAt?: string;
   updatedBy?: string;
+  approvedBy?: string;
+  approvedAt?: string;
 }
 
 export interface ElectricalFeederNodeMeta {
@@ -528,7 +801,9 @@ export interface EquipmentModificationLog {
   id: string;
   timestamp: string;
   modifiedBy: string;
-  changeType: 'UPGRADE' | 'SWAP' | 'RELOCATION' | 'RENAME' | 'DECOMMISSION' | 'SPECS_UPDATE';
+  approvedBy?: string;
+  approvedAt?: string;
+  changeType: 'UPGRADE' | 'SWAP' | 'RELOCATION' | 'RENAME' | 'DECOMMISSION' | 'SPECS_UPDATE' | 'INSPECTION';
   summary: string;
   reason: string;
   previousValues?: Record<string, any>;

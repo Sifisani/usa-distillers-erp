@@ -1,22 +1,25 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import {
   User,
+  GoogleAuthProvider,
   onAuthStateChanged,
   signInWithEmailAndPassword,
+  signInWithPopup,
   createUserWithEmailAndPassword,
   signInAnonymously,
   signOut as firebaseSignOut,
   updateProfile
 } from 'firebase/auth';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { auth, db } from '../firebase';
+import { auth, db, firebaseRuntimeInfo } from '../firebase';
 import { UserProfile } from '../types';
-import { COMPANY_ORGANOGRAM, getStaffById } from '../core/master-data/organization';
+import { getStaffById } from '../core/master-data/organization';
 
 interface AuthContextType {
   currentUser: User | null;
   userProfile: UserProfile | null;
   loading: boolean;
+  loginWithGoogle: () => Promise<void>;
   loginWithEmail: (email: string, pass: string) => Promise<void>;
   registerWithEmail: (email: string, pass: string, name: string, dept: string, role?: UserProfile['role']) => Promise<void>;
   loginAsDemoUser: (preset: 'supervisor' | 'technician' | 'manager' | 'operator' | 'director' | 'chairman') => Promise<void>;
@@ -66,72 +69,80 @@ const DEFAULT_DEMO_USERS: Record<string, UserProfile> = {
     avatarColor: 'bg-amber-700'
   },
   technician: {
-    uid: 'staff-stanley-matsenjwa',
-    displayName: 'Stanley Matsenjwa',
-    email: 's.matsenjwa@usadistillers.com',
+    uid: 'staff-phumelele-maseko',
+    displayName: 'Msebenzi Gamedze',
+    email: 'm.gamedze@usadistillers.com',
     department: 'Engineering - Electrical & Instrumentation',
-    role: 'Supervisor',
-    title: 'Instrumentation Supervisor',
-    level: 'Supervisor',
+    role: 'Technician',
+    title: 'Plant Electrician (Standby)',
+    level: 'Artisan',
     avatarColor: 'bg-teal-500'
   },
   operator: {
-    uid: 'staff-ncamiso-dlamini',
-    displayName: 'Ncamiso Dlamini',
-    email: 'n.dlamini@usadistillers.com',
-    department: 'Production - Distillation Columns',
-    role: 'Supervisor',
-    title: 'Assistant Production Manager',
-    level: 'Assistant Manager',
+    uid: 'staff-operator-boiler',
+    displayName: 'Melusi Dlamini',
+    email: 'm.dlamini.op@usadistillers.com',
+    department: 'Utilities - Boiler House',
+    role: 'Operator',
+    title: 'Senior Boiler Operator',
+    level: 'Operator',
     avatarColor: 'bg-orange-500'
   }
 };
+
+const PERSONA_STORAGE_KEY = 'usa_distillers_dev_persona';
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(() => {
-    const saved = localStorage.getItem('usa_distillers_active_profile');
-    return saved ? JSON.parse(saved) : DEFAULT_DEMO_USERS.supervisor;
-  });
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user);
       if (user) {
-        // Try reading user profile from Firestore if it exists
+        // In non-production dev/staging mode, allow previously chosen organogram persona preview
+        if (!firebaseRuntimeInfo.isProduction) {
+          const savedPersona = localStorage.getItem(PERSONA_STORAGE_KEY);
+          if (savedPersona) {
+            try {
+              const parsed = JSON.parse(savedPersona) as UserProfile;
+              setUserProfile({ ...parsed, uid: user.uid });
+              setLoading(false);
+              return;
+            } catch {
+              localStorage.removeItem(PERSONA_STORAGE_KEY);
+            }
+          }
+        }
+
+        // Read authenticated user profile from Firestore if present
         try {
           const userDoc = await getDoc(doc(db, 'users', user.uid));
           if (userDoc.exists()) {
             const data = userDoc.data() as UserProfile;
             setUserProfile(data);
-            localStorage.setItem('usa_distillers_active_profile', JSON.stringify(data));
             setLoading(false);
             return;
           }
         } catch {
-          // If Firestore read fails or profile doesn't exist, use Auth object
+          // Profile document may not exist yet for first-time Google sign-in
         }
 
         const fallbackProfile: UserProfile = {
           uid: user.uid,
-          email: user.email || 'operator@distillers-erp-dev.internal',
+          email: user.email || `operator@${firebaseRuntimeInfo.projectId}.internal`,
           displayName: user.displayName || user.email?.split('@')[0] || 'Distillery Staff',
-          department: userProfile?.department || 'Engineering - Mechanical Maintenance',
-          role: userProfile?.role || 'Supervisor',
+          department: 'Engineering - Mechanical Maintenance',
+          role: user.email === 'sifisani@gmail.com' ? 'Admin' : 'Supervisor',
           avatarColor: 'bg-indigo-600'
         };
         setUserProfile(fallbackProfile);
-        localStorage.setItem('usa_distillers_active_profile', JSON.stringify(fallbackProfile));
       } else {
-        // If not signed in with Firebase Auth, ensure active staff profile exists for the ERP workspace
-        const active = localStorage.getItem('usa_distillers_active_profile');
-        if (!active) {
-          setUserProfile(DEFAULT_DEMO_USERS.supervisor);
-          localStorage.setItem('usa_distillers_active_profile', JSON.stringify(DEFAULT_DEMO_USERS.supervisor));
-        }
+        // Strictly clear profile when no Firebase Auth session is active
+        setUserProfile(null);
       }
       setLoading(false);
     });
@@ -139,10 +150,56 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => unsubscribe();
   }, []);
 
+  const loginWithGoogle = async () => {
+    setLoading(true);
+    try {
+      const provider = new GoogleAuthProvider();
+      const cred = await signInWithPopup(auth, provider);
+      const user = cred.user;
+
+      if (!firebaseRuntimeInfo.isProduction) {
+        localStorage.removeItem(PERSONA_STORAGE_KEY);
+      }
+
+      try {
+        const userDocRef = doc(db, 'users', user.uid);
+        const existingSnap = await getDoc(userDocRef);
+        if (existingSnap.exists()) {
+          setUserProfile(existingSnap.data() as UserProfile);
+          return;
+        }
+        const newProfile: UserProfile = {
+          uid: user.uid,
+          email: user.email || '',
+          displayName: user.displayName || user.email?.split('@')[0] || 'Distillery User',
+          department: 'Engineering - Mechanical Maintenance',
+          role: 'Supervisor',
+          avatarColor: 'bg-[#714B67]'
+        };
+        await setDoc(userDocRef, newProfile);
+        setUserProfile(newProfile);
+      } catch {
+        setUserProfile({
+          uid: user.uid,
+          email: user.email || '',
+          displayName: user.displayName || user.email?.split('@')[0] || 'Distillery User',
+          department: 'Engineering - Mechanical Maintenance',
+          role: user.email === 'sifisani@gmail.com' ? 'Admin' : 'Supervisor',
+          avatarColor: 'bg-[#714B67]'
+        });
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const loginWithEmail = async (email: string, pass: string) => {
     setLoading(true);
     try {
       const cred = await signInWithEmailAndPassword(auth, email, pass);
+      if (!firebaseRuntimeInfo.isProduction) {
+        localStorage.removeItem(PERSONA_STORAGE_KEY);
+      }
       const profile: UserProfile = {
         uid: cred.user.uid,
         email: cred.user.email || email,
@@ -152,7 +209,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         avatarColor: 'bg-[#714B67]'
       };
       setUserProfile(profile);
-      localStorage.setItem('usa_distillers_active_profile', JSON.stringify(profile));
     } finally {
       setLoading(false);
     }
@@ -167,6 +223,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   ) => {
     setLoading(true);
     try {
+      const safeRole: UserProfile['role'] = role === 'Admin' ? 'Supervisor' : role;
       const cred = await createUserWithEmailAndPassword(auth, email, pass);
       await updateProfile(cred.user, { displayName: name });
       const profile: UserProfile = {
@@ -174,11 +231,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         email,
         displayName: name,
         department: dept,
-        role,
+        role: safeRole,
         avatarColor: 'bg-indigo-600'
       };
 
-      // Also persist to users collection in Firestore
       try {
         await setDoc(doc(db, 'users', cred.user.uid), profile);
       } catch (err) {
@@ -186,26 +242,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       setUserProfile(profile);
-      localStorage.setItem('usa_distillers_active_profile', JSON.stringify(profile));
     } finally {
       setLoading(false);
     }
   };
 
+  const applyDevPersonaWithFirebaseAuth = async (profile: UserProfile) => {
+    if (firebaseRuntimeInfo.isProduction) {
+      throw new Error('Staff role switching is disabled in production. Sign in with your company account.');
+    }
+
+    const user = auth.currentUser || (await signInAnonymously(auth)).user;
+    const activeProfile: UserProfile = { ...profile, uid: user.uid };
+    setUserProfile(activeProfile);
+    localStorage.setItem(PERSONA_STORAGE_KEY, JSON.stringify(activeProfile));
+
+    try {
+      const userRef = doc(db, 'users', user.uid);
+      const existingSnap = await getDoc(userRef);
+      if (!existingSnap.exists()) {
+        await setDoc(userRef, {
+          ...activeProfile,
+          role: activeProfile.role === 'Admin' ? 'Supervisor' : activeProfile.role
+        });
+      }
+    } catch {
+      // Non-blocking in dev preview mode
+    }
+  };
+
   const loginAsDemoUser = async (preset: 'supervisor' | 'technician' | 'manager' | 'operator' | 'director' | 'chairman') => {
     const profile = DEFAULT_DEMO_USERS[preset] || DEFAULT_DEMO_USERS.supervisor;
-    try {
-      const cred = await signInAnonymously(auth);
-      const activeProfile = {
-        ...profile,
-        uid: cred.user.uid
-      };
-      setUserProfile(activeProfile);
-      localStorage.setItem('usa_distillers_active_profile', JSON.stringify(activeProfile));
-    } catch {
-      setUserProfile(profile);
-      localStorage.setItem('usa_distillers_active_profile', JSON.stringify(profile));
-    }
+    await applyDevPersonaWithFirebaseAuth(profile);
   };
 
   const loginAsStaffMember = async (staffId: string) => {
@@ -222,18 +290,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       staffId: staff.id,
       avatarColor: staff.avatarColor
     };
-    try {
-      const cred = await signInAnonymously(auth);
-      const activeProfile = {
-        ...profile,
-        uid: cred.user.uid
-      };
-      setUserProfile(activeProfile);
-      localStorage.setItem('usa_distillers_active_profile', JSON.stringify(activeProfile));
-    } catch {
-      setUserProfile(profile);
-      localStorage.setItem('usa_distillers_active_profile', JSON.stringify(profile));
-    }
+    await applyDevPersonaWithFirebaseAuth(profile);
   };
 
   const logout = async () => {
@@ -243,6 +300,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // Ignored
     }
     setUserProfile(null);
+    localStorage.removeItem(PERSONA_STORAGE_KEY);
     localStorage.removeItem('usa_distillers_active_profile');
   };
 
@@ -252,6 +310,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         currentUser,
         userProfile,
         loading,
+        loginWithGoogle,
         loginWithEmail,
         registerWithEmail,
         loginAsDemoUser,

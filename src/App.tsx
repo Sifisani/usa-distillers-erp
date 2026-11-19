@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Plus,
   Table as TableIcon,
@@ -14,8 +14,11 @@ import {
   PackageCheck,
   Send,
   Users,
-  Package
+  Package,
+  Shield,
+  Lock
 } from 'lucide-react';
+import { firebaseRuntimeInfo } from './firebase';
 import { Header } from './components/layout/Header';
 import { Sidebar } from './components/layout/Sidebar';
 import { JobCardListView } from './components/jobcards/JobCardListView';
@@ -25,6 +28,10 @@ import { JobCardDetailModal } from './components/jobcards/JobCardDetailModal';
 import { PrintWorkOrderModal } from './components/jobcards/PrintWorkOrderModal';
 import { LoginModal } from './components/auth/LoginModal';
 import { EquipmentView } from './components/equipment/EquipmentView';
+import {
+  ElectricalDistributionView,
+  ElectricalSubModule
+} from './components/equipment/ElectricalDistributionView';
 import { DashboardView } from './components/dashboard/DashboardView';
 import { SettingsView } from './components/settings/SettingsView';
 import { OrganogramExplorer } from './components/organization/OrganogramExplorer';
@@ -51,9 +58,10 @@ import {
 } from './services/jobCardService';
 import {
   subscribeEquipment,
-  createEquipment,
-  updateEquipment,
-  modifyEquipmentWithAudit
+  safeCreateEquipment,
+  modifyEquipmentWithAudit,
+  updateEquipmentInspectionFields,
+  safeDeleteEquipmentWithCheck
 } from './services/equipmentService';
 import {
   subscribeStoresSlips,
@@ -65,6 +73,33 @@ import {
   updatePowerNodeWithAudit
 } from './services/powerDistributionService';
 import {
+  subscribePowerConnections,
+  createPowerConnectionWithAudit,
+  deletePowerConnectionWithAudit
+} from './services/powerConnectionService';
+import {
+  subscribeElectricalMeasurements,
+  recordElectricalMeasurement
+} from './services/electricalMeasurementService';
+import {
+  subscribeElectricalInspections,
+  subscribeElectricalInspectionReviews,
+  subscribeInspectionTemplates,
+  submitElectricalInspection,
+  submitInspectionReview,
+  saveInspectionTemplate
+} from './services/electricalInspectionService';
+import {
+  DEFAULT_INSPECTION_TEMPLATES,
+  SubmitInspectionInput,
+  collectElectricalMaintenanceAlerts,
+  indexLatestInspectionsByAsset
+} from './core/electrical/inspections';
+import {
+  DEFAULT_POWER_NODES,
+  evaluatePowerDistributionHazards
+} from './core/master-data/powerDistributionData';
+import {
   JobCard,
   Equipment,
   JobCardStatus,
@@ -73,7 +108,18 @@ import {
   TechnicalTrade,
   ShiftGroup,
   StoresRequisitionSlip,
-  PowerDistributionNode
+  PowerDistributionNode,
+  PowerConnection,
+  ElectricalMeasurement,
+  ElectricalInspection,
+  ElectricalInspectionReview,
+  ElectricalJobCardPrefill,
+  InspectionAssetCategory,
+  InspectionReviewStatus,
+  InspectionTemplate,
+  FeederPanelId,
+  PowerVoltageTier,
+  PowerEdgeRole
 } from './types';
 import {
   getActiveStandbyRoster,
@@ -82,11 +128,17 @@ import {
 } from './core/master-data/organization';
 
 function MainApp() {
-  const { userProfile } = useAuth();
+  const { currentUser, userProfile, loading: authLoading, loginWithGoogle } = useAuth();
+  const [authActionError, setAuthActionError] = useState<string | null>(null);
+  const [authBusy, setAuthBusy] = useState(false);
 
   // Navigation & View state (Default to Works Requisitions for supervisor action)
-  const [currentView, setCurrentView] = useState<'jobcards' | 'equipment' | 'spares' | 'slips' | 'launchpad' | 'dashboard' | 'organogram' | 'reports' | 'settings'>('jobcards');
+  const [currentView, setCurrentView] = useState<
+    'jobcards' | 'equipment' | 'electrical' | 'spares' | 'slips' | 'launchpad' | 'dashboard' | 'organogram' | 'reports' | 'settings'
+  >('jobcards');
   const [jobCardViewMode, setJobCardViewMode] = useState<'list' | 'kanban'>('kanban');
+  const [electricalSubModule, setElectricalSubModule] = useState<ElectricalSubModule>('diagram');
+  const [electricalTargetPanel, setElectricalTargetPanel] = useState<FeederPanelId | null>(null);
 
   // Search & Filtering state
   const [searchQuery, setSearchQuery] = useState('');
@@ -104,10 +156,18 @@ function MainApp() {
   const [equipmentList, setEquipmentList] = useState<Equipment[]>([]);
   const [storesSlips, setStoresSlips] = useState<StoresRequisitionSlip[]>([]);
   const [powerNodes, setPowerNodes] = useState<PowerDistributionNode[]>([]);
+  const [powerConnections, setPowerConnections] = useState<PowerConnection[]>([]);
+  const [electricalMeasurements, setElectricalMeasurements] = useState<ElectricalMeasurement[]>([]);
+  const [electricalInspections, setElectricalInspections] = useState<ElectricalInspection[]>([]);
+  const [electricalInspectionReviews, setElectricalInspectionReviews] = useState<ElectricalInspectionReview[]>([]);
+  const [inspectionTemplates, setInspectionTemplates] = useState<Record<InspectionAssetCategory, InspectionTemplate>>(
+    DEFAULT_INSPECTION_TEMPLATES
+  );
   const [loading, setLoading] = useState(true);
 
   // Modal states
   const [isFormModalOpen, setIsFormModalOpen] = useState(false);
+  const [jobCardPrefill, setJobCardPrefill] = useState<ElectricalJobCardPrefill | null>(null);
   const [isQuickLogModalOpen, setIsQuickLogModalOpen] = useState(false);
   const [isStandbyModalOpen, setIsStandbyModalOpen] = useState(false);
   const [selectedCardForEdit, setSelectedCardForEdit] = useState<JobCard | null>(null);
@@ -115,8 +175,24 @@ function MainApp() {
   const [selectedCardForPrint, setSelectedCardForPrint] = useState<JobCard | null>(null);
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
 
-  // Subscribe to real-time Firestore collections
+  // Subscribe to real-time Firestore collections only when Firebase Auth session is active
   useEffect(() => {
+    if (authLoading) return;
+    if (!currentUser) {
+      setJobCards([]);
+      setEquipmentList([]);
+      setStoresSlips([]);
+      setPowerNodes([]);
+      setPowerConnections([]);
+      setElectricalMeasurements([]);
+      setElectricalInspections([]);
+      setElectricalInspectionReviews([]);
+      setInspectionTemplates(DEFAULT_INSPECTION_TEMPLATES);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
     const unsubCards = subscribeJobCards(
       (cards) => {
         setJobCards(cards);
@@ -141,17 +217,72 @@ function MainApp() {
       setStoresSlips(slips);
     });
 
-    const unsubPower = subscribePowerNodes((nodes) => {
-      setPowerNodes(nodes);
-    });
+    const unsubPower = subscribePowerNodes(
+      (nodes) => {
+        setPowerNodes(nodes);
+      },
+      (err) => {
+        console.error('Power distribution subscription error:', err);
+      }
+    );
+
+    const unsubConnections = subscribePowerConnections(
+      (connections) => {
+        setPowerConnections(connections);
+      },
+      (err) => {
+        console.error('Power connections subscription error:', err);
+      }
+    );
+
+    const unsubMeasurements = subscribeElectricalMeasurements(
+      (measurements) => {
+        setElectricalMeasurements(measurements);
+      },
+      (err) => {
+        console.error('Electrical measurements subscription error:', err);
+      }
+    );
+
+    const unsubInspections = subscribeElectricalInspections(
+      (inspections) => {
+        setElectricalInspections(inspections);
+      },
+      (err) => {
+        console.error('Electrical inspections subscription error:', err);
+      }
+    );
+
+    const unsubInspectionReviews = subscribeElectricalInspectionReviews(
+      (reviews) => {
+        setElectricalInspectionReviews(reviews);
+      },
+      (err) => {
+        console.error('Electrical inspection reviews subscription error:', err);
+      }
+    );
+
+    const unsubTemplates = subscribeInspectionTemplates(
+      (templates) => {
+        setInspectionTemplates(templates);
+      },
+      (err) => {
+        console.error('Inspection templates subscription error:', err);
+      }
+    );
 
     return () => {
       unsubCards();
       unsubEquip();
       unsubSlips();
       unsubPower();
+      unsubConnections();
+      unsubMeasurements();
+      unsubInspections();
+      unsubInspectionReviews();
+      unsubTemplates();
     };
-  }, []);
+  }, [currentUser, authLoading]);
 
   // Sync open detail modal when real-time updates happen
   useEffect(() => {
@@ -287,9 +418,169 @@ function MainApp() {
   };
 
   const handleNewJobCardForEquipment = (equipment: Equipment) => {
+    const deptCategory = equipment.department?.split(' - ')[0] || 'Engineering';
     setSelectedCardForEdit(null);
+    setJobCardPrefill({
+      equipmentId: equipment.id,
+      equipmentCode: equipment.code,
+      equipmentName: equipment.name,
+      department: equipment.department || 'Engineering - Electrical & Instrumentation',
+      departmentCategory: deptCategory,
+      plantArea: equipment.plantArea || equipment.location,
+      electricalFeeder: equipment.feederPanel
+        ? `${equipment.feederPanel}${equipment.feederBreaker ? ` / ${equipment.feederBreaker}` : ''}`
+        : undefined,
+      description: '',
+      priority: 'Medium',
+      equipmentSpecs: {
+        powerKw: equipment.powerKw,
+        ratedCurrentAmps: equipment.ratedCurrentAmps,
+        loadCurrentAmps: equipment.loadCurrentAmps,
+        overloadAmps: equipment.overloadAmps,
+        starterType: equipment.starterType,
+        speedRpm: equipment.speedRpm,
+        plantArea: equipment.plantArea
+      }
+    });
     setIsFormModalOpen(true);
-    // Pre-set in form modal
+  };
+
+  const handleRaiseJobCardFromInspection = (prefill: ElectricalJobCardPrefill) => {
+    setSelectedCardForEdit(null);
+    setJobCardPrefill(prefill);
+    setIsFormModalOpen(true);
+  };
+
+  const electricalAlertCount = useMemo(() => {
+    const nodes = powerNodes.length > 0 ? powerNodes : DEFAULT_POWER_NODES;
+    const summaries = indexLatestInspectionsByAsset(
+      electricalInspections,
+      electricalInspectionReviews
+    );
+    const hazards = evaluatePowerDistributionHazards(
+      nodes,
+      equipmentList,
+      jobCards,
+      powerConnections,
+      electricalMeasurements
+    );
+    return collectElectricalMaintenanceAlerts({
+      powerNodes: nodes,
+      equipmentList,
+      conditionSummaries: summaries,
+      hazards
+    }).length;
+  }, [
+    powerNodes,
+    electricalInspections,
+    electricalInspectionReviews,
+    equipmentList,
+    jobCards,
+    powerConnections,
+    electricalMeasurements
+  ]);
+
+  const handleOpenElectricalModule = (panelId?: FeederPanelId) => {
+    setElectricalTargetPanel(panelId || null);
+    setElectricalSubModule('diagram');
+    setCurrentView('electrical');
+  };
+
+  const handleUpdatePowerNodeShared = async (
+    node: PowerDistributionNode,
+    updates: Partial<PowerDistributionNode>,
+    audit: {
+      modifiedBy: string;
+      summary: string;
+      reason: string;
+      previousValues?: Record<string, any>;
+      newValues?: Record<string, any>;
+    }
+  ) => {
+    await updatePowerNodeWithAudit(node, updates, {
+      ...audit,
+      approvedBy: userProfile?.displayName || audit.modifiedBy
+    });
+  };
+
+  const handleCreatePowerConnectionShared = async (candidate: {
+    sourceNodeId: string;
+    targetNodeId: string;
+    voltageTier: PowerVoltageTier;
+    edgeRole: PowerEdgeRole;
+    label?: string;
+    reason: string;
+    createdBy: string;
+  }) => {
+    await createPowerConnectionWithAudit(
+      {
+        ...candidate,
+        approvedBy: userProfile?.displayName || candidate.createdBy
+      },
+      powerNodes,
+      powerConnections
+    );
+  };
+
+  const handleSubmitElectricalInspectionShared = async (
+    input: Omit<SubmitInspectionInput, 'technicianId' | 'technicianName' | 'technicianRole'>
+  ) => {
+    if (!currentUser) return;
+    await submitElectricalInspection(input, {
+      technicianName: userProfile?.displayName || currentUser.email || 'Authorized Technician',
+      technicianRole: userProfile?.role,
+      userEmail: userProfile?.email || currentUser.email,
+      existingCount: electricalInspections.length
+    });
+    if (
+      input.measurements &&
+      (input.measurements.currentAmps !== undefined ||
+        input.measurements.voltageV !== undefined ||
+        input.measurements.currentL1Amps !== undefined)
+    ) {
+      try {
+        await recordElectricalMeasurement({
+          assetId: input.assetId,
+          assetKind: input.assetKind,
+          assetCode: input.assetCode,
+          measurementType: 'CURRENT',
+          phase: '3PH_AVG',
+          unit: 'A',
+          source: input.measurementSource || 'MEASURED',
+          values: input.measurements,
+          timestamp: input.inspectedAt,
+          recordedBy: userProfile?.displayName || currentUser.email || 'Authorized Technician',
+          recordedByUid: currentUser.uid,
+          notes: `Logged with Electrical Inspection (${input.conditionAssessment})`
+        });
+      } catch (measErr) {
+        console.warn('Optional measurement mirror failed after inspection save:', measErr);
+      }
+    }
+  };
+
+  const handleSubmitInspectionReviewShared = async (params: {
+    inspectionId: string;
+    assetId: string;
+    decision: Exclude<InspectionReviewStatus, 'PENDING_REVIEW'>;
+    reviewNotes: string;
+  }) => {
+    if (!currentUser) return;
+    await submitInspectionReview({
+      ...params,
+      reviewerName: userProfile?.displayName || currentUser.email || 'Engineering Supervisor',
+      reviewerRole: userProfile?.role,
+      userEmail: userProfile?.email || currentUser.email
+    });
+  };
+
+  const handleSaveInspectionTemplateShared = async (template: InspectionTemplate) => {
+    if (!currentUser) return;
+    await saveInspectionTemplate(template, {
+      userName: userProfile?.displayName || currentUser.email || 'Engineering Admin',
+      userRole: userProfile?.role,
+      userEmail: userProfile?.email || currentUser.email
+    });
   };
 
   const handleOpenEditFromDetail = (card: JobCard) => {
@@ -307,12 +598,110 @@ function MainApp() {
     { id: 'Cancelled', label: 'Cancelled' }
   ];
 
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-[#f2f4f1] flex items-center justify-center p-6 font-sans">
+        <div className="bg-white border border-slate-200 rounded-lg shadow-sm px-6 py-5 text-center space-y-2 max-w-sm w-full">
+          <div className="w-8 h-8 border-2 border-[#1b4332] border-t-transparent rounded-full animate-spin mx-auto" />
+          <p className="text-xs font-semibold text-slate-700">
+            Verifying Firebase session ({firebaseRuntimeInfo.projectId})...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <div className="min-h-screen bg-[#1b4332] flex items-center justify-center p-4 font-sans">
+        <div className="bg-white rounded-lg shadow-2xl border border-slate-200 max-w-md w-full overflow-hidden">
+          <div className="bg-[#714B67] text-white px-6 py-5">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded bg-white/10 border border-white/20 flex items-center justify-center">
+                <Lock className="w-5 h-5 text-amber-300" />
+              </div>
+              <div>
+                <h1 className="text-lg font-bold tracking-tight">USA Distillers ERP</h1>
+                <p className="text-xs text-white/80">Great Usuthu Plant — Authenticated Workspace</p>
+              </div>
+            </div>
+            <div className="mt-3 flex items-center justify-between text-[11px] font-mono bg-black/25 px-2.5 py-1.5 rounded border border-white/10">
+              <span className="flex items-center gap-1.5 text-emerald-300">
+                <Shield className="w-3.5 h-3.5" />
+                {firebaseRuntimeInfo.projectId}
+              </span>
+              <span className="uppercase text-[10px] font-sans font-bold px-1.5 py-0.5 rounded bg-white/15">
+                {firebaseRuntimeInfo.environment}
+              </span>
+            </div>
+          </div>
+
+          <div className="p-6 space-y-4">
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Firestore security rules enforce authenticated plant access. Sign in with your Google workspace account or company credentials to synchronize work orders, machinery assets, and power distribution records.
+            </p>
+
+            {authActionError && (
+              <div className="p-2.5 rounded bg-rose-50 border border-rose-200 text-rose-700 text-xs">
+                {authActionError}
+              </div>
+            )}
+
+            <button
+              type="button"
+              disabled={authBusy}
+              onClick={async () => {
+                setAuthActionError(null);
+                setAuthBusy(true);
+                try {
+                  await loginWithGoogle();
+                } catch (err: any) {
+                  setAuthActionError(err.message || 'Google Sign-In failed.');
+                } finally {
+                  setAuthBusy(false);
+                }
+              }}
+              className="w-full flex items-center justify-center gap-2.5 bg-[#1b4332] hover:bg-[#143326] text-white py-2.5 px-4 rounded text-xs font-bold shadow-sm transition cursor-pointer disabled:opacity-50"
+            >
+              <span>{authBusy ? 'Signing in...' : 'Sign in with Google'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsLoginModalOpen(true)}
+              className="w-full py-2 px-4 rounded border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold transition cursor-pointer"
+            >
+              Sign in with Email / Staff Options
+            </button>
+          </div>
+        </div>
+
+        <LoginModal
+          isOpen={isLoginModalOpen}
+          onClose={() => setIsLoginModalOpen(false)}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#f8f9fa] flex flex-col font-sans text-slate-800 antialiased selection:bg-[#714B67] selection:text-white">
       {/* USA Distillers Header Bar */}
       <Header
         currentView={currentView}
-        subView={currentView === 'jobcards' ? (jobCardViewMode === 'kanban' ? 'Kanban View' : 'List View') : undefined}
+        subView={
+          currentView === 'jobcards'
+            ? jobCardViewMode === 'kanban'
+              ? 'Kanban View'
+              : 'List View'
+            : currentView === 'electrical'
+            ? electricalSubModule === 'diagram'
+              ? 'Single-Line Diagram'
+              : electricalSubModule === 'inspections'
+              ? 'Asset Inspections'
+              : 'Load Monitoring'
+            : undefined
+        }
         onSearchChange={setSearchQuery}
         searchQuery={searchQuery}
         emergencyCount={emergencyCount}
@@ -330,6 +719,7 @@ function MainApp() {
             emergencyCount={emergencyCount}
             pendingSparesCount={pendingSparesCount}
             paperSlipsCount={paperSlipsCount}
+            electricalAlertCount={electricalAlertCount}
           />
         )}
 
@@ -376,16 +766,126 @@ function MainApp() {
               equipmentList={equipmentList}
               jobCards={jobCards}
               powerNodes={powerNodes}
+              powerConnections={powerConnections}
+              electricalMeasurements={electricalMeasurements}
               currentUserName={userProfile?.displayName || 'Engineering Supervisor'}
-              onUpdatePowerNode={async (node, updates, audit) => {
-                await updatePowerNodeWithAudit(node, updates, audit);
-              }}
+              userRole={userProfile?.role}
+              userEmail={userProfile?.email}
+              onUpdatePowerNode={handleUpdatePowerNodeShared}
               onCreateEquipment={async (data) => {
-                await createEquipment(data);
+                await safeCreateEquipment(data, equipmentList, powerNodes);
               }}
-              onModifyEquipment={modifyEquipmentWithAudit}
+              onModifyEquipment={(eq, updates, audit) =>
+                modifyEquipmentWithAudit(eq, updates, audit, {
+                  existingEquipment: equipmentList,
+                  validPowerNodes: powerNodes
+                })
+              }
+              onInspectUpdateEquipment={async (eq, inspection, audit) => {
+                await updateEquipmentInspectionFields(eq, inspection, audit);
+                if (typeof inspection.loadCurrentAmps === 'number' && !Number.isNaN(inspection.loadCurrentAmps)) {
+                  await recordElectricalMeasurement({
+                    assetId: eq.id,
+                    assetKind: 'EQUIPMENT',
+                    assetCode: eq.code,
+                    measurementType: 'CURRENT',
+                    phase: '3PH_AVG',
+                    unit: 'A',
+                    source: 'MEASURED',
+                    values: { currentAmps: inspection.loadCurrentAmps },
+                    timestamp: new Date().toISOString(),
+                    recordedBy: audit.inspectedBy,
+                    recordedByUid: currentUser.uid,
+                    notes: audit.reason
+                  });
+                }
+              }}
+              onDeleteEquipment={(eq) => safeDeleteEquipmentWithCheck(eq, jobCards)}
+              onCreatePowerConnection={handleCreatePowerConnectionShared}
+              onDeletePowerConnection={deletePowerConnectionWithAudit}
+              onRecordElectricalMeasurement={async (input) => {
+                await recordElectricalMeasurement({
+                  ...input,
+                  recordedByUid: currentUser.uid
+                });
+              }}
               onNewJobCardForEquipment={handleNewJobCardForEquipment}
+              electricalInspections={electricalInspections}
+              electricalInspectionReviews={electricalInspectionReviews}
+              inspectionTemplates={inspectionTemplates}
+              onSubmitElectricalInspection={handleSubmitElectricalInspectionShared}
+              onSubmitInspectionReview={handleSubmitInspectionReviewShared}
+              onSaveInspectionTemplate={handleSaveInspectionTemplateShared}
+              onRaiseJobCardFromInspection={handleRaiseJobCardFromInspection}
+              onSelectJobCard={(card) => setSelectedCardForDetail(card)}
+              onOpenElectricalDistribution={handleOpenElectricalModule}
               searchQuery={searchQuery}
+            />
+          )}
+
+          {/* VIEW: ELECTRICAL DISTRIBUTION MODULE (SLD, Inspections & Load Monitoring) */}
+          {currentView === 'electrical' && (
+            <ElectricalDistributionView
+              powerNodes={powerNodes}
+              powerConnections={powerConnections}
+              electricalMeasurements={electricalMeasurements}
+              equipmentList={equipmentList}
+              jobCards={jobCards}
+              currentUserName={userProfile?.displayName || 'Engineering Supervisor'}
+              userRole={userProfile?.role}
+              userEmail={userProfile?.email}
+              activeSubModule={electricalSubModule}
+              onSubModuleChange={setElectricalSubModule}
+              initialSelectedPanel={electricalTargetPanel}
+              onOpenEquipmentRegistry={() => setCurrentView('equipment')}
+              onUpdatePowerNode={handleUpdatePowerNodeShared}
+              onCreateEquipment={async (data) => {
+                await safeCreateEquipment(data, equipmentList, powerNodes);
+              }}
+              onModifyEquipment={(eq, updates, audit) =>
+                modifyEquipmentWithAudit(eq, updates, audit, {
+                  existingEquipment: equipmentList,
+                  validPowerNodes: powerNodes
+                })
+              }
+              onInspectUpdateEquipment={async (eq, inspection, audit) => {
+                await updateEquipmentInspectionFields(eq, inspection, audit);
+                if (typeof inspection.loadCurrentAmps === 'number' && !Number.isNaN(inspection.loadCurrentAmps)) {
+                  await recordElectricalMeasurement({
+                    assetId: eq.id,
+                    assetKind: 'EQUIPMENT',
+                    assetCode: eq.code,
+                    measurementType: 'CURRENT',
+                    phase: '3PH_AVG',
+                    unit: 'A',
+                    source: 'MEASURED',
+                    values: { currentAmps: inspection.loadCurrentAmps },
+                    timestamp: new Date().toISOString(),
+                    recordedBy: audit.inspectedBy,
+                    recordedByUid: currentUser.uid,
+                    notes: audit.reason
+                  });
+                }
+              }}
+              onDeleteEquipment={(eq) => safeDeleteEquipmentWithCheck(eq, jobCards)}
+              onCreatePowerConnection={handleCreatePowerConnectionShared}
+              onDeletePowerConnection={deletePowerConnectionWithAudit}
+              onRecordElectricalMeasurement={async (input) => {
+                await recordElectricalMeasurement({
+                  ...input,
+                  recordedByUid: currentUser.uid
+                });
+              }}
+              onNewJobCardForEquipment={handleNewJobCardForEquipment}
+              onSelectJobCard={(card) => setSelectedCardForDetail(card)}
+              electricalInspections={electricalInspections}
+              electricalInspectionReviews={electricalInspectionReviews}
+              inspectionTemplates={inspectionTemplates}
+              onSubmitElectricalInspection={handleSubmitElectricalInspectionShared}
+              onSubmitInspectionReview={handleSubmitInspectionReviewShared}
+              onSaveInspectionTemplate={handleSaveInspectionTemplateShared}
+              onRaiseJobCardFromInspection={handleRaiseJobCardFromInspection}
+              globalSearchQuery={searchQuery}
             />
           )}
 
@@ -734,9 +1234,11 @@ function MainApp() {
         onClose={() => {
           setIsFormModalOpen(false);
           setSelectedCardForEdit(null);
+          setJobCardPrefill(null);
         }}
         onSubmit={handleCreateOrUpdateJobCard}
         existingCard={selectedCardForEdit}
+        prefillData={jobCardPrefill}
         existingCards={jobCards}
         equipmentList={equipmentList}
       />

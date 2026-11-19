@@ -2,14 +2,18 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Default deny all access
+    // Pillar 1: Global Safety Net — Default deny all access
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // Helper functions
+    // Core Authentication & Validation Primitives
     function isSignedIn() {
       return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
     }
 
     function isValidId(id) {
@@ -26,94 +30,346 @@ service cloud.firestore {
 
     function isAdmin() {
       return isSignedIn() && (
-        request.auth.token.email == 'sifisani@gmail.com' ||
-        (exists(/databases/$(database)/documents/admins/$(request.auth.uid)))
+        (request.auth.token.email == 'sifisani@gmail.com' && request.auth.token.email_verified == true) ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // Pillar 4: Tiered Identity Logic — Authorized Electrical Engineering Roles
+    function isElectricalEngineer() {
+      return isAdmin() || (
+        isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['Admin', 'Manager', 'Supervisor']
+      );
+    }
+
+    function isEngineeringAdmin() {
+      return isAdmin() || (
+        isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['Admin', 'Manager']
+      );
+    }
+
+    function isInspectionSubmitter() {
+      return isAdmin() || (
+        isSignedIn() && (
+          !exists(/databases/$(database)/documents/users/$(request.auth.uid)) ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['Admin', 'Manager', 'Supervisor', 'Technician']
+        )
       );
     }
 
     // Job Card validation
     function isValidJobCard(data) {
-      return data.jobCardNumber is string && data.jobCardNumber.size() <= 50 &&
-             data.department is string && data.department.size() <= 100 &&
-             data.equipmentName is string && data.equipmentName.size() <= 150 &&
+      return data.jobCardNumber is string && data.jobCardNumber.size() > 0 && data.jobCardNumber.size() <= 50 &&
+             data.department is string && data.department.size() > 0 && data.department.size() <= 100 &&
+             data.equipmentName is string && data.equipmentName.size() > 0 && data.equipmentName.size() <= 150 &&
              data.priority in ['Low', 'Medium', 'High', 'Emergency'] &&
              data.status in ['Draft', 'In Progress', 'Pending Spares', 'Completed', 'Cancelled'] &&
              data.description is string && data.description.size() <= 4000 &&
-             data.assignedTo is string && data.assignedTo.size() <= 100;
+             data.assignedTo is string && data.assignedTo.size() <= 100 &&
+             (!('equipmentCode' in data) || (data.equipmentCode is string && data.equipmentCode.size() <= 50)) &&
+             (!('electricalFeeder' in data) || (data.electricalFeeder is string && data.electricalFeeder.size() <= 150)) &&
+             (!('inspectionId' in data) || (data.inspectionId is string && data.inspectionId.size() <= 128)) &&
+             (!('inspectionReference' in data) || (data.inspectionReference is string && data.inspectionReference.size() <= 60)) &&
+             (!('createdById' in data) || (data.createdById is string && data.createdById.size() <= 128)) &&
+             (!('laborLogs' in data) || (data.laborLogs is list && data.laborLogs.size() <= 200)) &&
+             (!('comments' in data) || (data.comments is list && data.comments.size() <= 500)) &&
+             (!('sparesRequested' in data) || (data.sparesRequested is list && data.sparesRequested.size() <= 100)) &&
+             (!('shiftHandovers' in data) || (data.shiftHandovers is list && data.shiftHandovers.size() <= 100));
     }
 
     // Equipment validation
     function isValidEquipment(data) {
-      return data.code is string && data.code.size() <= 50 &&
-             data.name is string && data.name.size() <= 150 &&
-             data.department is string && data.department.size() <= 100 &&
-             data.status in ['Operational', 'Under Maintenance', 'Standby', 'Decommissioned'];
+      return data.code is string && data.code.size() > 0 && data.code.size() <= 50 &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 150 &&
+             data.department is string && data.department.size() > 0 && data.department.size() <= 100 &&
+             data.status in ['Operational', 'Under Maintenance', 'Standby', 'Decommissioned'] &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 2000)) &&
+             (!('feederNodeId' in data) || (data.feederNodeId is string && data.feederNodeId.size() <= 128)) &&
+             (!('feederPanel' in data) || (data.feederPanel is string && data.feederPanel.size() <= 100)) &&
+             (!('loadCurrentAmps' in data) || data.loadCurrentAmps is number) &&
+             (!('modificationHistory' in data) || (data.modificationHistory is list && data.modificationHistory.size() <= 200));
     }
 
     // User profile validation
     function isValidUserProfile(data) {
-      return data.uid is string &&
+      return data.uid is string && data.uid.size() > 0 && data.uid.size() <= 128 &&
              data.email is string && data.email.size() <= 150 &&
-             data.displayName is string && data.displayName.size() <= 100;
+             data.displayName is string && data.displayName.size() > 0 && data.displayName.size() <= 100 &&
+             data.role in ['Admin', 'Supervisor', 'Technician', 'Operator', 'Manager'];
     }
 
     // Stores Issue Requisition Slip validation
     function isValidStoresSlip(data) {
-      return data.slipNumber is string && data.slipNumber.size() <= 50 &&
-             data.jobCardNumber is string && data.jobCardNumber.size() <= 50 &&
-             data.requestedByArtisan is string && data.requestedByArtisan.size() <= 100 &&
-             data.issuerSignature is string && data.issuerSignature.size() <= 100;
+      return data.slipNumber is string && data.slipNumber.size() > 0 && data.slipNumber.size() <= 50 &&
+             data.jobCardNumber is string && data.jobCardNumber.size() > 0 && data.jobCardNumber.size() <= 50 &&
+             data.requestedByArtisan is string && data.requestedByArtisan.size() > 0 && data.requestedByArtisan.size() <= 100 &&
+             data.issuerSignature is string && data.issuerSignature.size() > 0 && data.issuerSignature.size() <= 100 &&
+             data.status in ['Issued', 'Pending Verification', 'Verified', 'Cancelled'] &&
+             (!('items' in data) || (data.items is list && data.items.size() <= 100));
     }
 
     // Power Distribution SLD Node validation
     function isValidPowerNode(data) {
-      return data.code is string && data.code.size() <= 50 &&
-             data.name is string && data.name.size() <= 150 &&
+      return data.code is string && data.code.size() > 0 && data.code.size() <= 50 &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 150 &&
              data.category in ['SOURCE', 'STEP_UP_TX', 'METERING_TX', 'BUSBAR', 'HV_FUSE', 'TRANSFORMER', 'BREAKER', 'CONTROL_CENTRE'] &&
-             data.operatingState in ['CLOSED', 'OPEN', 'TRIPPED', 'DECOMMISSIONED'];
+             data.operatingState in ['CLOSED', 'OPEN', 'TRIPPED', 'DECOMMISSIONED'] &&
+             (!('sourceNodeIds' in data) || (data.sourceNodeIds is list && data.sourceNodeIds.size() <= 20)) &&
+             (!('approvedBy' in data) || (data.approvedBy is string && data.approvedBy.size() <= 120)) &&
+             (!('approvedAt' in data) || (data.approvedAt is string && data.approvedAt.size() <= 40)) &&
+             (!('modificationHistory' in data) || (data.modificationHistory is list && data.modificationHistory.size() <= 200));
     }
 
-    // Test connection doc
-    match /test/{docId} {
-      allow read: if true;
+    // Multi-Source Power Distribution Connection validation
+    function isValidPowerConnection(data) {
+      return data.sourceNodeId is string && isValidId(data.sourceNodeId) &&
+             data.targetNodeId is string && isValidId(data.targetNodeId) &&
+             data.sourceNodeId != data.targetNodeId &&
+             data.voltageTier in ['11kV', '6.3kV', '400V', '415V', '420V'] &&
+             data.edgeRole in ['PRIMARY_FEED', 'SUB_FEED', 'STANDBY_FEED', 'INTERLOCK_TIE'] &&
+             (!('label' in data) || (data.label is string && data.label.size() <= 150)) &&
+             (!('approvedBy' in data) || (data.approvedBy is string && data.approvedBy.size() <= 120)) &&
+             (!('approvedAt' in data) || (data.approvedAt is string && data.approvedAt.size() <= 40)) &&
+             (!('createdBy' in data) || (data.createdBy is string && data.createdBy.size() <= 120)) &&
+             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 40)) &&
+             (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 40)) &&
+             (!('modificationHistory' in data) || (data.modificationHistory is list && data.modificationHistory.size() <= 50));
+    }
+
+    // Daily Plant Report validation
+    function isValidDailyPlantReport(data) {
+      return data.id is string && data.id.size() > 0 && data.id.size() <= 128 &&
+             data.reportDate is string && data.reportDate.size() > 0 && data.reportDate.size() <= 20 &&
+             data.reportedBy is string && data.reportedBy.size() > 0 && data.reportedBy.size() <= 150 &&
+             data.status in ['Draft', 'Submitted', 'Verified'];
+    }
+
+    // Immutable Electrical Measurement validation (strictly MEASURED or METERED readings)
+    function isValidElectricalMeasurement(data) {
+      return data.assetId is string && data.assetId.size() > 0 && data.assetId.size() <= 128 &&
+             data.assetKind in ['POWER_NODE', 'EQUIPMENT'] &&
+             data.measurementType in ['CURRENT', 'VOLTAGE', 'POWER', 'POWER_FACTOR', 'FREQUENCY', 'ENERGY', 'COMPREHENSIVE_PANEL'] &&
+             data.phase in ['3PH_TOTAL', '3PH_AVG', 'L1', 'L2', 'L3', 'L1_L2', 'L2_L3', 'L3_L1'] &&
+             data.unit is string && data.unit.size() > 0 && data.unit.size() <= 30 &&
+             data.source in ['MEASURED', 'METERED'] &&
+             data.values is map && data.values.size() > 0 && data.values.size() <= 16 &&
+             data.timestamp is string && data.timestamp.size() > 0 && data.timestamp.size() <= 40 &&
+             data.recordedBy is string && data.recordedBy.size() > 0 && data.recordedBy.size() <= 120 &&
+             data.recordedByUid is string && data.recordedByUid.size() > 0 && data.recordedByUid.size() <= 128 &&
+             data.createdAt is string && data.createdAt.size() > 0 && data.createdAt.size() <= 40 &&
+             (!('assetCode' in data) || (data.assetCode is string && data.assetCode.size() <= 50)) &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 1000));
+    }
+
+    // Immutable Structured Electrical Inspection validation
+    function isValidElectricalInspection(data) {
+      return data.inspectionNumber is string && data.inspectionNumber.size() > 0 && data.inspectionNumber.size() <= 60 &&
+             data.assetId is string && data.assetId.size() > 0 && data.assetId.size() <= 128 &&
+             data.assetKind in ['POWER_NODE', 'EQUIPMENT'] &&
+             data.assetCode is string && data.assetCode.size() > 0 && data.assetCode.size() <= 50 &&
+             data.assetName is string && data.assetName.size() > 0 && data.assetName.size() <= 150 &&
+             data.assetCategory in ['CIRCUIT_BREAKER', 'TRANSFORMER', 'MOTOR', 'MCC_DB'] &&
+             data.plantArea is string && data.plantArea.size() > 0 && data.plantArea.size() <= 120 &&
+             data.electricalFeeder is string && data.electricalFeeder.size() > 0 && data.electricalFeeder.size() <= 150 &&
+             data.conditionAssessment in ['HEALTHY', 'ATTENTION_REQUIRED', 'FAULT_DETECTED', 'UNDER_MAINTENANCE', 'ISOLATED', 'DECOMMISSIONED'] &&
+             data.templateId in ['CIRCUIT_BREAKER', 'TRANSFORMER', 'MOTOR', 'MCC_DB'] &&
+             data.templateVersion is number && data.templateVersion >= 1 &&
+             data.checklistResults is list && data.checklistResults.size() > 0 && data.checklistResults.size() <= 50 &&
+             data.observations is string && data.observations.size() > 0 && data.observations.size() <= 3000 &&
+             data.photos is list && data.photos.size() <= 4 &&
+             data.recommendations is string && data.recommendations.size() <= 2000 &&
+             data.followUpRequired is bool &&
+             data.technicianId is string && data.technicianId.size() > 0 && data.technicianId.size() <= 128 &&
+             data.technicianName is string && data.technicianName.size() > 0 && data.technicianName.size() <= 120 &&
+             data.technicianRole in ['Admin', 'Manager', 'Supervisor', 'Technician'] &&
+             data.inspectedAt is string && data.inspectedAt.size() > 0 && data.inspectedAt.size() <= 40 &&
+             data.createdAt is timestamp && data.createdAt == request.time &&
+             (!('operatingStateSnapshot' in data) || (data.operatingStateSnapshot is string && data.operatingStateSnapshot.size() <= 40)) &&
+             (!('followUpAction' in data) || (data.followUpAction is string && data.followUpAction.size() <= 500)) &&
+             (!('recommendedPriority' in data) || data.recommendedPriority in ['Low', 'Medium', 'High', 'Emergency']) &&
+             (!('correctsInspectionId' in data) || (data.correctsInspectionId is string && data.correctsInspectionId.size() <= 128)) &&
+             (!('amendmentReason' in data) || (data.amendmentReason is string && data.amendmentReason.size() <= 500)) &&
+             (!('idempotencyKey' in data) || (data.idempotencyKey is string && data.idempotencyKey.size() <= 128)) &&
+             (!('measurementSource' in data) || data.measurementSource in ['MEASURED', 'METERED']) &&
+             (!('measurements' in data) || (data.measurements is map && data.measurements.size() <= 16)) &&
+             (!('insulationResistanceMohm' in data) || data.insulationResistanceMohm is number) &&
+             (!('windingTempC' in data) || data.windingTempC is number) &&
+             (!('ambientTempC' in data) || data.ambientTempC is number);
+    }
+
+    // Immutable Supervisor Review validation
+    function isValidInspectionReview(data) {
+      return data.inspectionId is string && data.inspectionId.size() > 0 && data.inspectionId.size() <= 128 &&
+             data.assetId is string && data.assetId.size() > 0 && data.assetId.size() <= 128 &&
+             data.decision in ['APPROVED', 'ACTION_REQUIRED'] &&
+             data.reviewNotes is string && data.reviewNotes.size() > 0 && data.reviewNotes.size() <= 1000 &&
+             data.reviewerUid is string && data.reviewerUid.size() > 0 && data.reviewerUid.size() <= 128 &&
+             data.reviewerName is string && data.reviewerName.size() > 0 && data.reviewerName.size() <= 120 &&
+             data.reviewerRole in ['Admin', 'Manager', 'Supervisor'] &&
+             data.reviewedAt is string && data.reviewedAt.size() > 0 && data.reviewedAt.size() <= 40 &&
+             data.createdAt is timestamp && data.createdAt == request.time;
+    }
+
+    // Configurable Inspection Template validation
+    function isValidInspectionTemplate(data) {
+      return data.category in ['CIRCUIT_BREAKER', 'TRANSFORMER', 'MOTOR', 'MCC_DB'] &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 150 &&
+             data.description is string && data.description.size() <= 500 &&
+             data.version is number && data.version >= 1 &&
+             data.items is list && data.items.size() > 0 && data.items.size() <= 40 &&
+             data.updatedBy is string && data.updatedBy.size() > 0 && data.updatedBy.size() <= 120 &&
+             data.updatedByUid is string && data.updatedByUid.size() > 0 && data.updatedByUid.size() <= 128 &&
+             data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    // Startup connection check document (read-only)
+    match /test/connection {
+      allow get: if true;
     }
 
     // Job Cards Collection: Plant-wide maintenance work orders
     match /jobCards/{jobCardId} {
-      allow read: if true;
-      allow create: if isValidId(jobCardId) && isValidJobCard(incoming());
-      allow update: if isValidId(jobCardId) && isValidJobCard(incoming());
-      allow delete: if isAdmin() || isSignedIn();
+      allow get: if isSignedIn() && isValidId(jobCardId);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(jobCardId) && isValidJobCard(incoming());
+      allow update: if isSignedIn() && isValidId(jobCardId) && isValidJobCard(incoming()) && (
+        isAdmin() ||
+        !(existing().status in ['Completed', 'Cancelled'])
+      );
+      allow delete: if isAdmin() || (isSignedIn() && existing().createdById == request.auth.uid);
     }
 
-    // Equipment Collection: Plant machinery asset registry
+    // Equipment Collection: Tiered RBAC — Engineers control topology/registry, Technicians log inspections only
     match /equipment/{equipmentId} {
-      allow read: if true;
-      allow create: if isValidId(equipmentId) && isValidEquipment(incoming());
-      allow update: if isValidId(equipmentId) && isValidEquipment(incoming());
-      allow delete: if isAdmin() || isSignedIn();
+      allow get: if isSignedIn() && isValidId(equipmentId);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(equipmentId) && isValidEquipment(incoming()) && isElectricalEngineer();
+      allow update: if isSignedIn() && isValidId(equipmentId) && isValidEquipment(incoming()) && (
+        isElectricalEngineer() ||
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'loadCurrentAmps',
+          'status',
+          'notes',
+          'lastServiceDate',
+          'nextServiceDate',
+          'modificationHistory',
+          'updatedAt'
+        ])
+      );
+      allow delete: if isValidId(equipmentId) && isElectricalEngineer();
     }
 
     // Stores Requisition Slips Collection: Physical triplicate book vouchers
     match /storesSlips/{slipId} {
-      allow read: if true;
-      allow create: if isValidId(slipId) && isValidStoresSlip(incoming());
-      allow update: if isValidId(slipId) && isValidStoresSlip(incoming());
-      allow delete: if isAdmin() || isSignedIn();
-    }
-
-    // Power Distribution SLD Nodes Collection: Editable breakers, transformers & sources
-    match /powerDistributionNodes/{nodeId} {
-      allow read: if true;
-      allow create: if isValidId(nodeId) && isValidPowerNode(incoming());
-      allow update: if isValidId(nodeId) && isValidPowerNode(incoming());
+      allow get: if isSignedIn() && isValidId(slipId);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(slipId) && isValidStoresSlip(incoming());
+      allow update: if isSignedIn() && isValidId(slipId) && isValidStoresSlip(incoming()) && (
+        isAdmin() ||
+        existing().status != 'Verified'
+      );
       allow delete: if isAdmin();
     }
 
-    // User Profiles Collection
+    // Power Distribution SLD Nodes Collection: Authorized engineering staff only for topology/state edits
+    match /powerDistributionNodes/{nodeId} {
+      allow get: if isSignedIn() && isValidId(nodeId);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(nodeId) && isValidPowerNode(incoming()) && isElectricalEngineer();
+      allow update: if isSignedIn() && isValidId(nodeId) && isValidPowerNode(incoming()) && isElectricalEngineer();
+      allow delete: if isValidId(nodeId) && isAdmin();
+    }
+
+    // Multi-Source Power Connections Collection: Authorized engineering staff only
+    match /powerConnections/{connectionId} {
+      allow get: if isSignedIn() && isValidId(connectionId);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(connectionId) && isValidPowerConnection(incoming()) && isElectricalEngineer();
+      allow update: if isSignedIn() && isValidId(connectionId) && isValidPowerConnection(incoming()) &&
+                       isElectricalEngineer() &&
+                       incoming().createdAt == existing().createdAt;
+      allow delete: if isValidId(connectionId) && isElectricalEngineer();
+    }
+
+    // Daily Plant Reports Collection
+    match /dailyPlantReports/{reportId} {
+      allow get: if isSignedIn() && isValidId(reportId);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(reportId) && isValidDailyPlantReport(incoming());
+      allow update: if isSignedIn() && isValidId(reportId) && isValidDailyPlantReport(incoming()) && (
+        isAdmin() ||
+        existing().status != 'Verified'
+      );
+      allow delete: if isAdmin();
+    }
+
+    // Immutable Historical Electrical Measurements Ledger (append-only; never overwritten or deleted)
+    match /electricalMeasurements/{measurementId} {
+      allow get: if isSignedIn() && isValidId(measurementId);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(measurementId) &&
+                       isValidElectricalMeasurement(incoming()) &&
+                       incoming().recordedByUid == request.auth.uid;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // Immutable Structured Electrical Inspections Ledger (append-only; corrections append new record)
+    match /electricalInspections/{inspectionId} {
+      allow get: if isSignedIn() && isValidId(inspectionId);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(inspectionId) &&
+                       isInspectionSubmitter() &&
+                       isValidElectricalInspection(incoming()) &&
+                       incoming().technicianId == request.auth.uid;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // Immutable Supervisor Review & Approval Records for Electrical Inspections
+    match /electricalInspectionReviews/{reviewId} {
+      allow get: if isSignedIn() && isValidId(reviewId);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(reviewId) &&
+                       isElectricalEngineer() &&
+                       isValidInspectionReview(incoming()) &&
+                       incoming().reviewerUid == request.auth.uid;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // Configurable Electrical Inspection Templates (Engineering Admins / Managers only)
+    match /inspectionTemplates/{templateId} {
+      allow get: if isSignedIn() && templateId in ['CIRCUIT_BREAKER', 'TRANSFORMER', 'MOTOR', 'MCC_DB'];
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() &&
+                       templateId in ['CIRCUIT_BREAKER', 'TRANSFORMER', 'MOTOR', 'MCC_DB'] &&
+                       isEngineeringAdmin() &&
+                       isValidInspectionTemplate(incoming()) &&
+                       incoming().updatedByUid == request.auth.uid;
+      allow update: if isSignedIn() &&
+                       templateId in ['CIRCUIT_BREAKER', 'TRANSFORMER', 'MOTOR', 'MCC_DB'] &&
+                       isEngineeringAdmin() &&
+                       isValidInspectionTemplate(incoming()) &&
+                       incoming().updatedByUid == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // User Profiles Collection (PII isolated to owner or admin)
     match /users/{userId} {
-      allow read: if true;
-      allow create, update: if isValidUserProfile(incoming());
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isOwner(userId) && isValidId(userId) && isValidUserProfile(incoming()) &&
+                       incoming().uid == request.auth.uid &&
+                       (incoming().role != 'Admin' || isAdmin());
+      allow update: if isValidId(userId) && isValidUserProfile(incoming()) && (
+        isAdmin() ||
+        (isOwner(userId) && incoming().uid == existing().uid && incoming().role == existing().role)
+      );
       allow delete: if isAdmin();
     }
   }

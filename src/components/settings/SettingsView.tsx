@@ -21,7 +21,7 @@ import { seedInitialJobCards } from '../../services/jobCardService';
 import { seedInitialEquipment } from '../../services/equipmentService';
 import { eventBus, DomainEvent } from '../../core/events/eventBus';
 import { OrganogramExplorer } from '../organization/OrganogramExplorer';
-import firebaseConfig from '../../../firebase-applet-config.json';
+import { firebaseRuntimeInfo } from '../../firebase';
 
 interface SettingsViewProps {
   jobCards: JobCard[];
@@ -52,7 +52,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ jobCards, equipmentL
   const handleExportJSON = () => {
     const data = {
       exportedAt: new Date().toISOString(),
-      plant: 'USA Distillers - Facility KY-03',
+      plant: 'USA Distillers — Great Usuthu Plant (Big Bend)',
       jobCards,
       equipment: equipmentList
     };
@@ -148,11 +148,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ jobCards, equipmentL
             </div>
             <div>
               <span className="text-slate-400 block text-[11px] font-semibold">Primary Facility</span>
-              <span className="font-medium text-slate-800">Plant #3 - Kentucky Bourbon & Spirit Production</span>
+              <span className="font-medium text-slate-800">Great Usuthu Plant — Big Bend, Eswatini</span>
             </div>
             <div>
               <span className="text-slate-400 block text-[11px] font-semibold">ERP Software Edition</span>
-              <span className="font-medium text-slate-800">Odoo Enterprise v17 Clean Clone (React + Tailwind + Firestore)</span>
+              <span className="font-medium text-slate-800">USA Distillers Enterprise ERP (React + Tailwind + Firestore)</span>
             </div>
             <div>
               <span className="text-slate-400 block text-[11px] font-semibold">Standards Compliance</span>
@@ -167,32 +167,42 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ jobCards, equipmentL
         <div className="bg-white p-5 rounded-md border border-slate-200 shadow-2xs space-y-3 text-xs">
           <div className="flex items-center space-x-2 border-b border-slate-100 pb-2">
             <Database className="w-4 h-4 text-[#714B67]" />
-            <h3 className="font-bold text-slate-800">Firebase Firestore Integration</h3>
+            <h3 className="font-bold text-slate-800">Firebase Environment & Firestore Status</h3>
           </div>
 
           <div className="space-y-2 font-mono text-[11px]">
             <div>
               <span className="text-slate-400 block font-sans text-[11px] font-semibold">Active Firebase Project</span>
-              <span className="text-slate-900 font-bold bg-amber-50 border border-amber-200 text-amber-900 px-2 py-0.5 rounded flex items-center justify-between">
-                <span>{firebaseConfig.projectId}</span>
-                <span className="text-[10px] text-amber-700 font-sans uppercase tracking-wider font-semibold">Dev Cluster</span>
+              <span className={`font-bold px-2 py-0.5 rounded flex items-center justify-between border ${
+                firebaseRuntimeInfo.isProduction
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                  : 'bg-amber-50 border-amber-200 text-amber-900'
+              }`}>
+                <span>{firebaseRuntimeInfo.projectId}</span>
+                <span className="text-[10px] font-sans uppercase tracking-wider font-semibold">
+                  {firebaseRuntimeInfo.environment}
+                </span>
               </span>
             </div>
             <div>
-              <span className="text-slate-400 block font-sans text-[11px] font-semibold">Production Target</span>
-              <span className="text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded flex items-center justify-between">
-                <span>distillers-erp-prod</span>
-                <span className="text-[10px] text-slate-500 font-sans">Vercel Prod Branch</span>
+              <span className="text-slate-400 block font-sans text-[11px] font-semibold">Configuration Source</span>
+              <span className="text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded flex items-center justify-between">
+                <span>{firebaseRuntimeInfo.configSource}</span>
+                <span className="text-[10px] text-slate-500 font-sans">
+                  {firebaseRuntimeInfo.configSource === 'env' ? 'VITE_FIREBASE_*' : 'Dev Fallback'}
+                </span>
               </span>
             </div>
             <div>
               <span className="text-slate-400 block font-sans text-[11px] font-semibold">Firestore Database ID</span>
-              <span className="text-slate-800 bg-slate-100 px-1.5 py-0.5 rounded truncate block">{firebaseConfig.firestoreDatabaseId}</span>
+              <span className="text-slate-800 bg-slate-100 px-1.5 py-0.5 rounded truncate block">
+                {firebaseRuntimeInfo.databaseId}
+              </span>
             </div>
             <div>
               <span className="text-slate-400 block font-sans text-[11px] font-semibold">Real-Time Sync</span>
               <span className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded font-sans font-semibold border border-emerald-200 inline-block">
-                onSnapshot Active (distillers-erp-dev)
+                onSnapshot Active ({firebaseRuntimeInfo.projectId})
               </span>
             </div>
           </div>

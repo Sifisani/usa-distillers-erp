@@ -26,7 +26,8 @@ import {
   Equipment,
   TechnicalTrade,
   ShiftGroup,
-  SafetyPermits
+  SafetyPermits,
+  ElectricalJobCardPrefill
 } from '../../types';
 import { generateNextJobCardNumber } from '../../services/jobCardService';
 import {
@@ -43,6 +44,7 @@ interface JobCardFormModalProps {
   onClose: () => void;
   onSubmit: (cardData: any) => Promise<void>;
   existingCard?: JobCard | null;
+  prefillData?: ElectricalJobCardPrefill | null;
   existingCards: JobCard[];
   equipmentList: Equipment[];
 }
@@ -52,6 +54,7 @@ export const JobCardFormModal: React.FC<JobCardFormModalProps> = ({
   onClose,
   onSubmit,
   existingCard,
+  prefillData = null,
   existingCards,
   equipmentList
 }) => {
@@ -60,6 +63,10 @@ export const JobCardFormModal: React.FC<JobCardFormModalProps> = ({
   const [jobCardNumber, setJobCardNumber] = useState<string>('');
   const [equipmentName, setEquipmentName] = useState<string>('');
   const [equipmentId, setEquipmentId] = useState<string>('');
+  const [equipmentCode, setEquipmentCode] = useState<string>('');
+  const [electricalFeeder, setElectricalFeeder] = useState<string>('');
+  const [inspectionId, setInspectionId] = useState<string>('');
+  const [inspectionReference, setInspectionReference] = useState<string>('');
   const [priority, setPriority] = useState<Priority>('Medium');
   const [status, setStatus] = useState<JobCardStatus>('Draft');
   const [description, setDescription] = useState<string>('');
@@ -102,6 +109,10 @@ export const JobCardFormModal: React.FC<JobCardFormModalProps> = ({
       setDepartmentCategory(existingCard.departmentCategory || 'Engineering');
       setEquipmentName(existingCard.equipmentName);
       setEquipmentId(existingCard.equipmentId || '');
+      setEquipmentCode(existingCard.equipmentCode || '');
+      setElectricalFeeder(existingCard.electricalFeeder || '');
+      setInspectionId(existingCard.inspectionId || '');
+      setInspectionReference(existingCard.inspectionReference || '');
       setPriority(existingCard.priority);
       setStatus(existingCard.status);
       setDescription(existingCard.description);
@@ -127,6 +138,42 @@ export const JobCardFormModal: React.FC<JobCardFormModalProps> = ({
       setRecipientDepartment(existingCard.recipientDepartment || 'Engineering Dept.');
       setOriginatedBy(existingCard.originatedBy || existingCard.createdByName || 'Atanasio Muchine (Distillation)');
       setOriginatedTime(existingCard.originatedTime || '11:30');
+    } else if (prefillData) {
+      const cat = prefillData.departmentCategory || 'Engineering';
+      const autoNum = generateNextJobCardNumber(cat, existingCards);
+      setJobCardNumber(autoNum);
+      setWorkOrderNumber(`${188500 + existingCards.length}`);
+      setRequisitionType(prefillData.priority === 'Emergency' ? 'Call Out' : 'Normal');
+      setCostCenter('CC-ENG-03');
+      setDepartmentCategory(cat);
+      setDepartment(prefillData.department || 'Engineering - Electrical & Instrumentation');
+      setEquipmentName(prefillData.equipmentName || '');
+      setEquipmentId(prefillData.equipmentId || '');
+      setEquipmentCode(prefillData.equipmentCode || '');
+      setElectricalFeeder(prefillData.electricalFeeder || '');
+      setInspectionId(prefillData.inspectionId || '');
+      setInspectionReference(prefillData.inspectionReference || '');
+      setPriority(prefillData.priority || 'High');
+      setStatus('Draft');
+      setDescription(prefillData.description || '');
+      setTradeRequired('Electrician');
+      setShiftAssigned('Shift A');
+      setStandbyTechnician('');
+      setAssignedTo('Msebenzi Gamedze — Electrician (Standby)');
+      setLotoRequired(Boolean(prefillData.dangerTagRequired));
+      setLotoTag(prefillData.dangerTagNumber || '');
+      setDangerTagRequired(Boolean(prefillData.dangerTagRequired));
+      setDangerTagNumber(prefillData.dangerTagNumber || '');
+      setHotWorkRequired(false);
+      setConfinedSpaceRequired(false);
+      setHeightPermitRequired(false);
+      setRecipientDepartment('Engineering Dept.');
+      setOriginatedBy('Electrical Inspection System');
+      const now = new Date();
+      setOriginatedTime(`${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`);
+      const d = new Date();
+      d.setDate(d.getDate() + (prefillData.priority === 'Emergency' ? 0 : 1));
+      setTargetDate(d.toISOString().split('T')[0]);
     } else {
       // Create mode: auto-generate next JC number based on category
       const autoNum = generateNextJobCardNumber(departmentCategory, existingCards);
@@ -148,6 +195,10 @@ export const JobCardFormModal: React.FC<JobCardFormModalProps> = ({
       setDepartment('Utilities - Boiler House');
       setEquipmentName('');
       setEquipmentId('');
+      setEquipmentCode('');
+      setElectricalFeeder('');
+      setInspectionId('');
+      setInspectionReference('');
       setPriority('Medium');
       setStatus('Draft');
       setDescription('');
@@ -166,7 +217,7 @@ export const JobCardFormModal: React.FC<JobCardFormModalProps> = ({
       d.setDate(d.getDate() + 2);
       setTargetDate(d.toISOString().split('T')[0]);
     }
-  }, [existingCard, isOpen]);
+  }, [existingCard, prefillData, isOpen]);
 
   // Recalculate auto JC number when category changes (only in create mode)
   const handleCategoryChange = (cat: string) => {
@@ -294,6 +345,10 @@ export const JobCardFormModal: React.FC<JobCardFormModalProps> = ({
         departmentCategory,
         equipmentName,
         equipmentId,
+        equipmentCode: equipmentCode || selectedEquipment?.code || undefined,
+        electricalFeeder: electricalFeeder || selectedEquipment?.feederPanel || undefined,
+        inspectionId: inspectionId || undefined,
+        inspectionReference: inspectionReference || undefined,
         priority,
         status,
         description,
@@ -303,7 +358,7 @@ export const JobCardFormModal: React.FC<JobCardFormModalProps> = ({
         shiftAssigned,
         standbyTechnician: shiftAssigned === 'Standby Callout' ? standbyTechnician : undefined,
         safetyPermits: safetyPermitsPayload,
-        equipmentSpecs: equipmentSpecsPayload,
+        equipmentSpecs: equipmentSpecsPayload || prefillData?.equipmentSpecs,
         // Official Works Requisition Slip fields
         workOrderNumber,
         requisitionType,
@@ -357,6 +412,18 @@ export const JobCardFormModal: React.FC<JobCardFormModalProps> = ({
             <div className="p-3 rounded bg-rose-50 border border-rose-200 text-rose-700 flex items-center gap-2">
               <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
               <span>{error}</span>
+            </div>
+          )}
+
+          {(inspectionReference || electricalFeeder) && (
+            <div className="p-3 rounded bg-purple-50 border border-purple-200 text-purple-900 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="font-bold flex items-center gap-1.5">
+                <Zap className="w-3.5 h-3.5 text-[#714B67]" />
+                Linked Electrical Inspection Finding
+              </span>
+              <span className="font-mono text-[11px]">
+                {inspectionReference ? `Ref: ${inspectionReference}` : ''}{inspectionReference && electricalFeeder ? ' • ' : ''}{electricalFeeder ? `Feeder: ${electricalFeeder}` : ''}
+              </span>
             </div>
           )}
 

@@ -26,7 +26,7 @@ import {
 import { getActiveStandbyRoster } from '../../core/master-data/organization';
 
 interface EnterpriseLaunchpadProps {
-  onNavigate: (view: 'dashboard' | 'jobcards' | 'equipment' | 'organogram' | 'reports' | 'settings') => void;
+  onNavigate: (view: 'dashboard' | 'jobcards' | 'equipment' | 'electrical' | 'organogram' | 'reports' | 'settings') => void;
   openJobCardCount: number;
   emergencyCount: number;
 }
@@ -181,13 +181,13 @@ export const EnterpriseLaunchpad: React.FC<EnterpriseLaunchpadProps> = ({
                   Operations & Plant Maintenance
                 </h4>
                 <p className="text-xs text-slate-600 mt-1 line-clamp-2">
-                  Works Requisitions (Job Cards), 105 machinery assets, LOTO permits, Daily Plant Report & continuous shifts.
+                  Works Requisitions (Job Cards), Electrical Distribution SLD, 105 machinery assets, LOTO &amp; Daily Report.
                 </p>
               </div>
 
               <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
                 <span className="font-semibold text-emerald-700 flex items-center gap-1">
-                  Open Engine (3 Tools) <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
+                  Open Engine (5 Tools) <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
                 </span>
                 {openJobCardCount > 0 && (
                   <span className="bg-emerald-600 text-white font-mono font-bold px-2 py-0.5 rounded text-[10px]">
@@ -523,6 +523,35 @@ export const EnterpriseLaunchpad: React.FC<EnterpriseLaunchpadProps> = ({
                   </p>
                   <div className="mt-2 text-xs font-semibold text-slate-700 flex items-center gap-1">
                     View Registry <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
+                  </div>
+                </div>
+              </div>
+
+              {/* 3b. ELECTRICAL DISTRIBUTION & POWER SLD */}
+              <div
+                onClick={() => {
+                  setShowOperationsDrilldown(false);
+                  onNavigate('electrical');
+                }}
+                className="bg-white border-2 border-amber-500 hover:border-amber-700 rounded-xl p-4 shadow-xs hover:shadow-md transition cursor-pointer flex items-start space-x-3 group"
+              >
+                <div className="w-12 h-12 rounded-xl bg-amber-600 text-white flex items-center justify-center shrink-0">
+                  <Zap className="w-6 h-6 text-amber-100" />
+                </div>
+                <div className="grow">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-black text-slate-900 group-hover:text-amber-900">
+                      Electrical Distribution &amp; SLD
+                    </h4>
+                    <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-amber-100 text-amber-900">
+                      11 kV / 400 V
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-600 mt-1">
+                    Interactive Plant Single-Line Diagram, Tx1–Tx3 Load Monitoring &amp; Structured Asset Inspections.
+                  </p>
+                  <div className="mt-2 text-xs font-semibold text-amber-800 flex items-center gap-1">
+                    Open Electrical Workspace <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
                   </div>
                 </div>
               </div>

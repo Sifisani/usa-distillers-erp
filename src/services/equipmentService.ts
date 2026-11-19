@@ -8,10 +8,40 @@ import {
   onSnapshot
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
-import { Equipment, EquipmentModificationLog } from '../types';
+import {
+  Equipment,
+  EquipmentModificationLog,
+  JobCard,
+  PowerDistributionNode
+} from '../types';
 import { eventBus, JobCardStatusChangedPayload } from '../core/events/eventBus';
+import { PLANT_EQUIPMENT_REGISTRY } from '../core/master-data/plantEquipment';
+import {
+  DEFAULT_POWER_NODES,
+  resolveEquipmentFeederInfo
+} from '../core/master-data/powerDistributionData';
+import {
+  validateEquipmentIntegrity,
+  validateSafeEquipmentDelete
+} from '../core/electrical/permissions';
 
 const COLLECTION_NAME = 'equipment';
+
+function sanitizeForFirestore<T>(obj: T): T {
+  if (Array.isArray(obj)) {
+    return obj.map(item => sanitizeForFirestore(item)) as unknown as T;
+  }
+  if (obj !== null && typeof obj === 'object') {
+    const cleaned: Record<string, any> = {};
+    for (const [key, value] of Object.entries(obj as Record<string, any>)) {
+      if (value !== undefined) {
+        cleaned[key] = sanitizeForFirestore(value);
+      }
+    }
+    return cleaned as T;
+  }
+  return obj;
+}
 
 // Decoupled inter-module event listener: Maintenance module -> Equipment Master Data
 eventBus.subscribe<JobCardStatusChangedPayload>('JOB_CARD_STATUS_CHANGED', async (event) => {
@@ -37,11 +67,7 @@ eventBus.subscribe<JobCardStatusChangedPayload>('JOB_CARD_STATUS_CHANGED', async
   }
 });
 
-import { PLANT_EQUIPMENT_REGISTRY } from '../core/master-data/plantEquipment';
-import { resolveEquipmentFeederInfo } from '../core/master-data/powerDistributionData';
-
 export const INITIAL_EQUIPMENT_DATA: Omit<Equipment, 'id'>[] = PLANT_EQUIPMENT_REGISTRY;
-
 
 export function subscribeEquipment(
   onUpdate: (equipment: Equipment[]) => void,
@@ -62,6 +88,7 @@ export function subscribeEquipment(
       }
       const items: Equipment[] = snapshot.docs.map((d) => {
         const data = d.data();
+        const resolvedFeeder = resolveEquipmentFeederInfo(data);
         return {
           id: d.id,
           code: data.code || data.equipmentCode || `EQ-${d.id.substring(0, 5).toUpperCase()}`,
@@ -85,9 +112,10 @@ export function subscribeEquipment(
           overloadAmps: typeof data.overloadAmps === 'number' ? data.overloadAmps : undefined,
           starterType: data.starterType || undefined,
           plantArea: data.plantArea || undefined,
-          feederPanel: data.feederPanel || resolveEquipmentFeederInfo(data).feederPanel,
-          transformerSource: data.transformerSource || resolveEquipmentFeederInfo(data).transformerSource,
-          feederBreaker: data.feederBreaker || resolveEquipmentFeederInfo(data).feederBreaker,
+          feederNodeId: data.feederNodeId || resolvedFeeder.breakerId,
+          feederPanel: data.feederPanel || resolvedFeeder.feederPanel,
+          transformerSource: data.transformerSource || resolvedFeeder.transformerSource,
+          feederBreaker: data.feederBreaker || resolvedFeeder.feederBreaker,
           modificationHistory: Array.isArray(data.modificationHistory) ? data.modificationHistory : [],
           createdAt: data.createdAt || new Date().toISOString(),
           updatedAt: data.updatedAt || new Date().toISOString()
@@ -111,7 +139,7 @@ export async function seedInitialEquipment() {
   for (const item of INITIAL_EQUIPMENT_DATA) {
     const docId = item.code.toLowerCase().replace(/[^a-z0-9]/g, '-');
     const docRef = doc(db, COLLECTION_NAME, docId);
-    await setDoc(docRef, item, { merge: true });
+    await setDoc(docRef, sanitizeForFirestore(item), { merge: true });
   }
 }
 
@@ -124,10 +152,10 @@ export async function syncOfficialPlantEquipmentRegistry(): Promise<{ syncedCoun
   for (const item of PLANT_EQUIPMENT_REGISTRY) {
     const docId = item.code.toLowerCase().replace(/[^a-z0-9]/g, '-');
     const docRef = doc(db, COLLECTION_NAME, docId);
-    await setDoc(docRef, {
+    await setDoc(docRef, sanitizeForFirestore({
       ...item,
       updatedAt: new Date().toISOString()
-    }, { merge: true });
+    }), { merge: true });
     count++;
   }
   return { syncedCount: count };
@@ -142,7 +170,7 @@ export async function createEquipment(data: Omit<Equipment, 'id' | 'createdAt' |
     updatedAt: new Date().toISOString()
   };
   try {
-    await setDoc(docRef, newEquipment);
+    await setDoc(docRef, sanitizeForFirestore(newEquipment));
     return docRef.id;
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, `${COLLECTION_NAME}/${docRef.id}`);
@@ -150,15 +178,102 @@ export async function createEquipment(data: Omit<Equipment, 'id' | 'createdAt' |
   }
 }
 
+/**
+ * Integrity-checked equipment creation preventing duplicate asset tags and orphaned feeder links.
+ */
+export async function safeCreateEquipment(
+  data: Omit<Equipment, 'id' | 'createdAt' | 'updatedAt'>,
+  existingEquipment: Equipment[],
+  validPowerNodes: PowerDistributionNode[] = DEFAULT_POWER_NODES
+): Promise<string> {
+  const integrity = validateEquipmentIntegrity(
+    {
+      code: data.code,
+      name: data.name,
+      feederNodeId: data.feederNodeId,
+      feederPanel: data.feederPanel ? String(data.feederPanel) : undefined
+    },
+    existingEquipment,
+    validPowerNodes
+  );
+  if (!integrity.valid) {
+    throw new Error(integrity.error || 'Equipment integrity validation failed.');
+  }
+  return createEquipment({
+    ...data,
+    code: data.code.trim().toUpperCase(),
+    name: data.name.trim()
+  });
+}
+
 export async function updateEquipment(id: string, updates: Partial<Equipment>): Promise<void> {
   const docRef = doc(db, COLLECTION_NAME, id);
   try {
-    await updateDoc(docRef, {
+    await updateDoc(docRef, sanitizeForFirestore({
       ...updates,
       updatedAt: new Date().toISOString()
-    });
+    }));
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `${COLLECTION_NAME}/${id}`);
+    throw error;
+  }
+}
+
+/**
+ * Technician-permitted inspection / clamp-meter update.
+ * Mutates only inspection fields + audit trail without altering electrical topology.
+ */
+export async function updateEquipmentInspectionFields(
+  equipment: Equipment,
+  inspection: {
+    loadCurrentAmps?: number;
+    status?: Equipment['status'];
+    notes?: string;
+    lastServiceDate?: string;
+    nextServiceDate?: string;
+  },
+  audit: {
+    inspectedBy: string;
+    reason: string;
+  }
+): Promise<void> {
+  const docRef = doc(db, COLLECTION_NAME, equipment.id);
+  const logEntry: EquipmentModificationLog = {
+    id: `insp-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    timestamp: new Date().toISOString(),
+    modifiedBy: audit.inspectedBy,
+    changeType: 'INSPECTION',
+    summary: `Field Inspection: Load ${inspection.loadCurrentAmps ?? equipment.loadCurrentAmps ?? '—'}A, Status ${inspection.status ?? equipment.status}`,
+    reason: audit.reason.trim() || 'Routine clamp-meter / condition inspection',
+    previousValues: {
+      loadCurrentAmps: equipment.loadCurrentAmps,
+      status: equipment.status
+    },
+    newValues: {
+      loadCurrentAmps: inspection.loadCurrentAmps ?? equipment.loadCurrentAmps,
+      status: inspection.status ?? equipment.status
+    }
+  };
+
+  const existingHistory = Array.isArray(equipment.modificationHistory)
+    ? equipment.modificationHistory
+    : [];
+  const newHistory = [logEntry, ...existingHistory].slice(0, 150);
+
+  const safeUpdates: Record<string, unknown> = {
+    modificationHistory: newHistory,
+    updatedAt: new Date().toISOString()
+  };
+  if (inspection.loadCurrentAmps !== undefined) safeUpdates.loadCurrentAmps = inspection.loadCurrentAmps;
+  if (inspection.status !== undefined) safeUpdates.status = inspection.status;
+  if (inspection.notes !== undefined) safeUpdates.notes = inspection.notes;
+  if (inspection.lastServiceDate !== undefined) safeUpdates.lastServiceDate = inspection.lastServiceDate;
+  if (inspection.nextServiceDate !== undefined) safeUpdates.nextServiceDate = inspection.nextServiceDate;
+
+  try {
+    await updateDoc(docRef, sanitizeForFirestore(safeUpdates));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `${COLLECTION_NAME}/${equipment.id}`);
     throw error;
   }
 }
@@ -171,6 +286,20 @@ export async function deleteEquipment(id: string): Promise<void> {
     handleFirestoreError(error, OperationType.DELETE, `${COLLECTION_NAME}/${id}`);
     throw error;
   }
+}
+
+/**
+ * Deletes an equipment asset ONLY after verifying zero historical/active jobCards reference it.
+ */
+export async function safeDeleteEquipmentWithCheck(
+  equipment: Equipment,
+  jobCards: JobCard[]
+): Promise<void> {
+  const check = validateSafeEquipmentDelete(equipment, jobCards);
+  if (!check.canDelete) {
+    throw new Error(check.error || 'Equipment is referenced by historical job cards.');
+  }
+  await deleteEquipment(equipment.id);
 }
 
 /**
@@ -187,8 +316,33 @@ export async function modifyEquipmentWithAudit(
     reason: string;
     previousValues?: Record<string, any>;
     newValues?: Record<string, any>;
+  },
+  context?: {
+    existingEquipment?: Equipment[];
+    validPowerNodes?: PowerDistributionNode[];
   }
 ): Promise<void> {
+  if (context?.existingEquipment || updates.code || updates.feederNodeId || updates.feederPanel) {
+    const candidateCode = updates.code ?? equipment.code;
+    const candidateName = updates.name ?? equipment.name;
+    const existingList = context?.existingEquipment || [];
+    const validNodes = context?.validPowerNodes || DEFAULT_POWER_NODES;
+    const check = validateEquipmentIntegrity(
+      {
+        code: candidateCode,
+        name: candidateName,
+        feederNodeId: updates.feederNodeId,
+        feederPanel: updates.feederPanel ? String(updates.feederPanel) : undefined
+      },
+      existingList,
+      validNodes,
+      equipment.id
+    );
+    if (!check.valid) {
+      throw new Error(check.error || 'Equipment modification integrity validation failed.');
+    }
+  }
+
   const docRef = doc(db, COLLECTION_NAME, equipment.id);
   const logEntry: EquipmentModificationLog = {
     id: `mod-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
@@ -205,14 +359,14 @@ export async function modifyEquipmentWithAudit(
     ? equipment.modificationHistory
     : [];
 
-  const newHistory = [logEntry, ...existingHistory];
+  const newHistory = [logEntry, ...existingHistory].slice(0, 150);
 
   try {
-    await updateDoc(docRef, {
+    await updateDoc(docRef, sanitizeForFirestore({
       ...updates,
       modificationHistory: newHistory,
       updatedAt: new Date().toISOString()
-    });
+    }));
 
     eventBus.publish('EQUIPMENT_MODIFIED', 'equipment', {
       equipmentId: equipment.id,

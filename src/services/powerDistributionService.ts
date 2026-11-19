@@ -88,6 +88,7 @@ export async function updatePowerNodeWithAudit(
   updates: Partial<PowerDistributionNode>,
   audit: {
     modifiedBy: string;
+    approvedBy?: string;
     changeType?: EquipmentModificationLog['changeType'];
     summary: string;
     reason: string;
@@ -96,10 +97,13 @@ export async function updatePowerNodeWithAudit(
   }
 ): Promise<PowerDistributionNode> {
   const now = new Date().toISOString();
+  const approver = audit.approvedBy || audit.modifiedBy || 'Engineering Supervisor';
   const newLogEntry: EquipmentModificationLog = {
     id: `sld-mod-${Date.now()}`,
     timestamp: now,
     modifiedBy: audit.modifiedBy || 'Engineering Supervisor',
+    approvedBy: approver,
+    approvedAt: now,
     changeType: audit.changeType || 'SPECS_UPDATE',
     summary: audit.summary,
     reason: audit.reason,
@@ -113,7 +117,9 @@ export async function updatePowerNodeWithAudit(
     id: existingNode.id,
     updatedAt: now,
     updatedBy: audit.modifiedBy || 'Engineering Supervisor',
-    modificationHistory: [newLogEntry, ...(existingNode.modificationHistory || [])]
+    approvedBy: approver,
+    approvedAt: now,
+    modificationHistory: [newLogEntry, ...(existingNode.modificationHistory || [])].slice(0, 150)
   };
 
   const docRef = doc(db, COLLECTION_NAME, existingNode.id);
