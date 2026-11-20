@@ -11,7 +11,8 @@ import {
 import {
   BusbarNodeData,
   ElectricalEquipmentNodeData,
-  MccPanelNodeData
+  MccPanelNodeData,
+  SwitchboardZoneNodeData
 } from '../../../core/electrical/sldLayout';
 import { PowerDistributionNode } from '../../../types';
 import {
@@ -149,6 +150,18 @@ export const ElectricalEquipmentNode: React.FC<NodeProps> = ({ data }) => {
       ? 'Nameplate Unrecorded'
       : `${pn.brand}${pn.ratedAmps ? ` • ${pn.ratedAmps}A` : ''}`;
 
+  const showTopHandle = d.activeTerminals ? Boolean(d.activeTerminals.top) : true;
+  const showLeftHandle = d.activeTerminals ? Boolean(d.activeTerminals.left) : true;
+  const showBottomHandle = d.activeTerminals ? Boolean(d.activeTerminals.bottom) : true;
+  const showRightHandle = d.activeTerminals ? Boolean(d.activeTerminals.right) : true;
+
+  const terminalClass =
+    isFault
+      ? '!w-2 !h-2 !rounded-full !bg-white !border-[1.5px] !border-red-600 pointer-events-none'
+      : energization === 'ENERGIZED'
+      ? '!w-2 !h-2 !rounded-full !bg-white !border-[1.5px] !border-emerald-700 pointer-events-none'
+      : '!w-2 !h-2 !rounded-full !bg-white !border-[1.5px] !border-slate-400 pointer-events-none';
+
   return (
     <div
       onClick={() => d.onSelect(pn.id)}
@@ -157,31 +170,43 @@ export const ElectricalEquipmentNode: React.FC<NodeProps> = ({ data }) => {
         isDecomm ? 'bg-slate-50/80 text-slate-500' : 'text-slate-900'
       }`}
     >
-      {/* Fixed handles on all 4 cardinal terminals for clean horizontal & vertical feeds */}
-      <Handle
-        type="target"
-        position={Position.Top}
-        id="top"
-        className="!w-1.5 !h-1.5 !bg-slate-400 !border-0"
-      />
-      <Handle
-        type="target"
-        position={Position.Left}
-        id="left"
-        className="!w-1.5 !h-1.5 !bg-slate-400 !border-0"
-      />
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        id="bottom"
-        className="!w-1.5 !h-1.5 !bg-slate-400 !border-0"
-      />
-      <Handle
-        type="source"
-        position={Position.Right}
-        id="right"
-        className="!w-1.5 !h-1.5 !bg-slate-400 !border-0"
-      />
+      {/* Fixed engineering terminals: render only ports with active conductors */}
+      {showTopHandle && (
+        <Handle
+          type="target"
+          position={Position.Top}
+          id="top"
+          isConnectable={false}
+          className={terminalClass}
+        />
+      )}
+      {showLeftHandle && (
+        <Handle
+          type="target"
+          position={Position.Left}
+          id="left"
+          isConnectable={false}
+          className={terminalClass}
+        />
+      )}
+      {showBottomHandle && (
+        <Handle
+          type="source"
+          position={Position.Bottom}
+          id="bottom"
+          isConnectable={false}
+          className={terminalClass}
+        />
+      )}
+      {showRightHandle && (
+        <Handle
+          type="source"
+          position={Position.Right}
+          id="right"
+          isConnectable={false}
+          className={terminalClass}
+        />
+      )}
 
       {/* Top Row: Tag Code + Voltage + State */}
       <div className="px-2 pt-1.5 pb-1 flex items-center justify-between gap-1 border-b border-slate-100">
@@ -424,8 +449,9 @@ export const BusbarNode: React.FC<NodeProps> = ({ data }) => {
           id={h.id}
           type={h.type}
           position={h.position === 'top' ? Position.Top : Position.Bottom}
+          isConnectable={false}
           style={{ left: `${h.leftPx}px` }}
-          className="!w-2 !h-2 !bg-amber-300 !border !border-slate-900"
+          className="!w-2 !h-2 !bg-amber-300 !border !border-slate-900 pointer-events-none"
         />
       ))}
 
@@ -531,7 +557,10 @@ export const MccPanelNode: React.FC<NodeProps> = ({ data }) => {
         type="target"
         position={Position.Top}
         id="top"
-        className="!w-1.5 !h-1.5 !bg-slate-400 !border-0"
+        isConnectable={false}
+        className={`!w-2 !h-2 !rounded-full !bg-white !border-[1.5px] pointer-events-none ${
+          isFault ? '!border-red-600' : isEnergized ? '!border-emerald-700' : '!border-slate-400'
+        }`}
       />
 
       {/* Panel Header */}
@@ -700,7 +729,52 @@ export const MccPanelNode: React.FC<NodeProps> = ({ data }) => {
   );
 };
 
+export const SwitchboardZoneNode: React.FC<NodeProps> = ({ data }) => {
+  const d = data as SwitchboardZoneNodeData;
+  const isHv = d.voltageTier === '11kV' || d.voltageTier === '6.3kV';
+
+  return (
+    <div
+      style={{
+        width: `${d.widthPx}px`,
+        height: `${d.heightPx}px`,
+        opacity: d.isDimmed ? 0.3 : 1
+      }}
+      className={`rounded-lg border border-dashed pointer-events-none select-none transition-opacity ${
+        isHv
+          ? 'border-red-300/90 bg-red-50/15'
+          : 'border-slate-300/95 bg-slate-100/35'
+      }`}
+    >
+      <div className="px-3 py-1.5 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span
+            className={`px-1.5 py-0.5 rounded font-mono text-[9.5px] font-bold uppercase tracking-wider border ${
+              isHv
+                ? 'bg-red-50 text-red-900 border-red-200'
+                : 'bg-white text-slate-800 border-slate-300'
+            }`}
+          >
+            {d.title}
+          </span>
+          <span className="text-[10px] font-mono text-slate-500 truncate">
+            {d.subtitle}
+          </span>
+        </div>
+        <span
+          className={`px-1.5 py-0.5 rounded font-mono text-[9px] font-bold shrink-0 ${
+            isHv ? 'bg-red-100/80 text-red-800' : 'bg-teal-50 text-teal-800 border border-teal-200'
+          }`}
+        >
+          {d.voltageTier}
+        </span>
+      </div>
+    </div>
+  );
+};
+
 export const sldNodeTypes = {
+  switchboardZoneNode: SwitchboardZoneNode,
   electricalEquipmentNode: ElectricalEquipmentNode,
   busbarNode: BusbarNode,
   mccPanelNode: MccPanelNode

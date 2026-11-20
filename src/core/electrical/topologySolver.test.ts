@@ -418,3 +418,109 @@ test('isAuthorizedElectricalEngineer enforces strict engineering RBAC roles', ()
   assert.equal(isAuthorizedElectricalEngineer(null, null), false);
 });
 
+test('SLD layout wraps switchboard zones before children and renders only connected terminals', () => {
+  const nodes = cloneNodes();
+  const solved = solve(nodes);
+  const built = buildSldDiagramElements({
+    powerNodes: nodes,
+    solved,
+    equipmentList: sampleEquipment,
+    jobCards: sampleJobCards,
+    selectedNodeId: null,
+    searchQuery: '',
+    expandedBranchIds: new Set(['BUS_TX1', 'BUS_TX2', 'BUS_TX3', 'C12']),
+    expandedPanelIds: new Set<FeederPanelId>(['MCC 1']),
+    onSelectNode: () => {},
+    onToggleBranch: () => {},
+    onTogglePanelLoads: () => {}
+  });
+
+  const zoneIds = ['ZONE_11KV', 'ZONE_TX1', 'ZONE_TX2', 'ZONE_TX3'];
+  for (const zId of zoneIds) {
+    assert.ok(built.nodes.some(n => n.id === zId && n.type === 'switchboardZoneNode'), `Missing ${zId}`);
+  }
+
+  // Every parentId node must appear AFTER its parent zone node in the React Flow array
+  const indexById = new Map(built.nodes.map((n, i) => [n.id, i]));
+  for (const n of built.nodes) {
+    if (n.parentId) {
+      const parentIdx = indexById.get(n.parentId);
+      const childIdx = indexById.get(n.id);
+      assert.ok(parentIdx !== undefined && childIdx !== undefined && parentIdx < childIdx,
+        `Parent ${n.parentId} must precede child ${n.id}`);
+    }
+  }
+
+  // Active terminals only include actually connected handles
+  const oldTurbine = built.nodes.find(n => n.id === 'OLD_TURBINE')?.data as { activeTerminals?: Record<string, boolean> };
+  assert.deepEqual(oldTurbine.activeTerminals, { right: true });
+
+  const c1 = built.nodes.find(n => n.id === 'C1')?.data as { activeTerminals?: Record<string, boolean> };
+  assert.deepEqual(c1.activeTerminals, { left: true, bottom: true });
+
+  const tx1 = built.nodes.find(n => n.id === 'TX1')?.data as { activeTerminals?: Record<string, boolean> };
+  assert.deepEqual(tx1.activeTerminals, { top: true, bottom: true });
+});
+
+test('Custom Firestore power nodes avoid overlapping MCC panels and canonical nodes', () => {
+  const nodes = cloneNodes();
+  const customA: PowerDistributionNode = {
+    id: 'CUSTOM_C8_SUB1',
+    code: 'C8-A',
+    name: 'Distillation Skids Sub-Breaker A',
+    category: 'BREAKER',
+    groupSection: 'TX1',
+    transformerSource: 'Tx1',
+    parentNodeId: 'C8',
+    brand: 'Schneider',
+    model: 'NSX250',
+    breakerType: 'MCCB',
+    ratedAmps: 250,
+    operatingState: 'CLOSED',
+    voltage: '400 V',
+    interlockStatus: 'NOT_APPLICABLE',
+    lotoIsolationProcedure: 'Isolate at C8',
+    location: 'Stillhouse',
+    description: 'Custom downstream sub-breaker off C8'
+  };
+  const customB: PowerDistributionNode = {
+    ...customA,
+    id: 'CUSTOM_C8_SUB2',
+    code: 'C8-B',
+    name: 'Distillation Skids Sub-Breaker B'
+  };
+  nodes.push(customA, customB);
+
+  const solved = solve(nodes);
+  const built = buildSldDiagramElements({
+    powerNodes: nodes,
+    solved,
+    equipmentList: sampleEquipment,
+    jobCards: sampleJobCards,
+    selectedNodeId: null,
+    searchQuery: '',
+    expandedBranchIds: new Set(['BUS_TX1', 'BUS_TX2', 'BUS_TX3', 'C12']),
+    expandedPanelIds: new Set<FeederPanelId>(['MCC 1']),
+    onSelectNode: () => {},
+    onToggleBranch: () => {},
+    onTogglePanelLoads: () => {}
+  });
+
+  const mcc1 = built.nodes.find(n => n.id === 'mcc-MCC 1')!;
+  const subA = built.nodes.find(n => n.id === 'CUSTOM_C8_SUB1')!;
+  const subB = built.nodes.find(n => n.id === 'CUSTOM_C8_SUB2')!;
+
+  assert.equal(subA.parentId, 'ZONE_TX1');
+  assert.equal(subB.parentId, 'ZONE_TX1');
+  // SubA and SubB must not share the same coordinates as mcc-MCC 1 or each other
+  const distinctKeys = new Set([
+    `${mcc1.position.x},${mcc1.position.y}`,
+    `${subA.position.x},${subA.position.y}`,
+    `${subB.position.x},${subB.position.y}`
+  ]);
+  assert.equal(distinctKeys.size, 3);
+  // Since MCC 1 is expanded under C8, custom nodes under C8 should be placed clear of MCC 1
+  assert.ok(subA.position.y > mcc1.position.y || subA.position.x !== mcc1.position.x);
+});
+
+

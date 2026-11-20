@@ -788,7 +788,11 @@ const PowerDistributionSLDCanvas: React.FC<PowerDistributionSLDViewProps> = ({
             maxZoom={2}
             nodesDraggable={false}
             nodesConnectable={false}
+            edgesReconnectable={false}
             elementsSelectable
+            deleteKeyCode={null}
+            selectionKeyCode={null}
+            multiSelectionKeyCode={null}
             panOnDrag
             zoomOnScroll
             onPaneClick={() => setInspectedNodeId(null)}
@@ -805,10 +809,14 @@ const PowerDistributionSLDCanvas: React.FC<PowerDistributionSLDViewProps> = ({
               pannable
               zoomable
               nodeColor={(n) => {
+                if (n.type === 'switchboardZoneNode') return 'transparent';
                 if (n.type === 'busbarNode') return '#0f172a';
                 if (n.type === 'mccPanelNode') return '#0284c7';
                 return '#64748b';
               }}
+              nodeStrokeColor={(n) =>
+                n.type === 'switchboardZoneNode' ? '#cbd5e1' : 'transparent'
+              }
               maskColor="rgba(241, 245, 249, 0.7)"
               className="!border !border-slate-300 !bg-white !rounded"
             />

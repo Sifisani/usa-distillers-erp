@@ -31,6 +31,25 @@ export interface SldHandleSpec {
   leftPx: number;
 }
 
+export interface ActiveTerminals {
+  top?: boolean;
+  bottom?: boolean;
+  left?: boolean;
+  right?: boolean;
+}
+
+export type SldZoneId = 'ZONE_11KV' | 'ZONE_TX1' | 'ZONE_TX2' | 'ZONE_TX3';
+
+export interface SwitchboardZoneNodeData extends Record<string, unknown> {
+  zoneId: SldZoneId;
+  title: string;
+  subtitle: string;
+  voltageTier: PowerVoltageTier;
+  widthPx: number;
+  heightPx: number;
+  isDimmed: boolean;
+}
+
 export interface ElectricalEquipmentNodeData extends Record<string, unknown> {
   powerNode: PowerDistributionNode;
   solvedState?: SolvedNodeState;
@@ -47,6 +66,7 @@ export interface ElectricalEquipmentNodeData extends Record<string, unknown> {
   /** Whether C1..C3 have left+bottom handles (horizontal inlet, vertical drop to 11kV bus) */
   entrySide: 'left' | 'top';
   hasRightHandle?: boolean;
+  activeTerminals?: ActiveTerminals;
   onSelect: (nodeId: string) => void;
   onToggleExpand?: (nodeId: string) => void;
   onExpandHierarchyNode?: (nodeId: string) => void;
@@ -135,6 +155,8 @@ export interface SldBuildOptions {
 }
 
 const NODE_WIDTH = 192;
+const EQUIPMENT_NODE_HEIGHT_ESTIMATE = 122;
+const BUSBAR_HEIGHT = 44;
 
 interface FixedPlacement {
   x: number;
@@ -142,60 +164,61 @@ interface FixedPlacement {
   entrySide?: 'left' | 'top';
   hasRightHandle?: boolean;
   voltageTier: PowerVoltageTier;
+  zoneId: SldZoneId;
 }
 
 const CANONICAL_PLACEMENTS: Record<string, FixedPlacement> = {
   // Level 1: Power Sources & HV Incomer Breakers (horizontal source -> breaker -> vertical drop to 11kV bus)
-  OLD_TURBINE: { x: 40, y: 40, entrySide: 'top', hasRightHandle: true, voltageTier: '6.3kV' },
-  OLD_STEP_UP_TX: { x: 270, y: 40, entrySide: 'left', hasRightHandle: true, voltageTier: '11kV' },
-  C1: { x: 500, y: 40, entrySide: 'left', voltageTier: '11kV' },
+  OLD_TURBINE: { x: 40, y: 46, entrySide: 'top', hasRightHandle: true, voltageTier: '6.3kV', zoneId: 'ZONE_11KV' },
+  OLD_STEP_UP_TX: { x: 270, y: 46, entrySide: 'left', hasRightHandle: true, voltageTier: '11kV', zoneId: 'ZONE_11KV' },
+  C1: { x: 500, y: 46, entrySide: 'left', voltageTier: '11kV', zoneId: 'ZONE_11KV' },
 
-  EEC_SUPPLY: { x: 930, y: 40, entrySide: 'top', hasRightHandle: true, voltageTier: '11kV' },
-  METERING_TX: { x: 1166, y: 40, entrySide: 'left', hasRightHandle: true, voltageTier: '11kV' },
-  C2: { x: 1402, y: 40, entrySide: 'left', voltageTier: '11kV' },
+  EEC_SUPPLY: { x: 930, y: 46, entrySide: 'top', hasRightHandle: true, voltageTier: '11kV', zoneId: 'ZONE_11KV' },
+  METERING_TX: { x: 1166, y: 46, entrySide: 'left', hasRightHandle: true, voltageTier: '11kV', zoneId: 'ZONE_11KV' },
+  C2: { x: 1402, y: 46, entrySide: 'left', voltageTier: '11kV', zoneId: 'ZONE_11KV' },
 
-  NEW_TURBINE: { x: 1980, y: 40, entrySide: 'top', hasRightHandle: true, voltageTier: '11kV' },
-  C3: { x: 2230, y: 40, entrySide: 'left', voltageTier: '11kV' },
+  NEW_TURBINE: { x: 1980, y: 46, entrySide: 'top', hasRightHandle: true, voltageTier: '11kV', zoneId: 'ZONE_11KV' },
+  C3: { x: 2230, y: 46, entrySide: 'left', voltageTier: '11kV', zoneId: 'ZONE_11KV' },
 
   // Level 2 & 3: Tx1 Leg
-  TX1_FUSE: { x: 148, y: 295, entrySide: 'top', voltageTier: '11kV' },
-  TX1: { x: 148, y: 430, entrySide: 'top', voltageTier: '11kV' },
-  C4: { x: 148, y: 565, entrySide: 'top', hasRightHandle: true, voltageTier: '415V' },
+  TX1_FUSE: { x: 148, y: 310, entrySide: 'top', voltageTier: '11kV', zoneId: 'ZONE_TX1' },
+  TX1: { x: 148, y: 445, entrySide: 'top', voltageTier: '11kV', zoneId: 'ZONE_TX1' },
+  C4: { x: 148, y: 580, entrySide: 'top', hasRightHandle: true, voltageTier: '415V', zoneId: 'ZONE_TX1' },
 
   // Emergency Gen Set + C7 (aligned beside C4 above Tx1 Busbar)
-  GEN_SET: { x: 404, y: 430, entrySide: 'top', voltageTier: '400V' },
-  C7: { x: 404, y: 565, entrySide: 'top', voltageTier: '400V' },
+  GEN_SET: { x: 404, y: 445, entrySide: 'top', voltageTier: '400V', zoneId: 'ZONE_TX1' },
+  C7: { x: 404, y: 580, entrySide: 'top', voltageTier: '400V', zoneId: 'ZONE_TX1' },
 
   // Level 2 & 3: Tx2 Leg
-  TX2_FUSE: { x: 1166, y: 295, entrySide: 'top', voltageTier: '11kV' },
-  TX2: { x: 1166, y: 430, entrySide: 'top', voltageTier: '11kV' },
-  C5: { x: 1166, y: 565, entrySide: 'top', voltageTier: '420V' },
+  TX2_FUSE: { x: 1166, y: 310, entrySide: 'top', voltageTier: '11kV', zoneId: 'ZONE_TX2' },
+  TX2: { x: 1166, y: 445, entrySide: 'top', voltageTier: '11kV', zoneId: 'ZONE_TX2' },
+  C5: { x: 1166, y: 580, entrySide: 'top', voltageTier: '420V', zoneId: 'ZONE_TX2' },
 
   // Level 2 & 3: Tx3 Leg
-  TX3_FUSE: { x: 2189, y: 295, entrySide: 'top', voltageTier: '11kV' },
-  TX3: { x: 2189, y: 430, entrySide: 'top', voltageTier: '11kV' },
-  C6: { x: 2189, y: 565, entrySide: 'top', voltageTier: '420V' },
+  TX3_FUSE: { x: 2189, y: 310, entrySide: 'top', voltageTier: '11kV', zoneId: 'ZONE_TX3' },
+  TX3: { x: 2189, y: 445, entrySide: 'top', voltageTier: '11kV', zoneId: 'ZONE_TX3' },
+  C6: { x: 2189, y: 580, entrySide: 'top', voltageTier: '420V', zoneId: 'ZONE_TX3' },
 
   // Level 4A: Tx1 Feeders
-  C8: { x: 40, y: 785, entrySide: 'top', voltageTier: '400V' },
-  C9: { x: 258, y: 785, entrySide: 'top', voltageTier: '400V' },
-  C10: { x: 476, y: 785, entrySide: 'top', voltageTier: '400V' },
+  C8: { x: 40, y: 795, entrySide: 'top', voltageTier: '400V', zoneId: 'ZONE_TX1' },
+  C9: { x: 258, y: 795, entrySide: 'top', voltageTier: '400V', zoneId: 'ZONE_TX1' },
+  C10: { x: 476, y: 795, entrySide: 'top', voltageTier: '400V', zoneId: 'ZONE_TX1' },
 
   // Level 4B: Tx2 Feeders
-  C11: { x: 730, y: 785, entrySide: 'top', voltageTier: '400V' },
-  C12: { x: 1166, y: 785, entrySide: 'top', voltageTier: '400V' },
-  C13: { x: 1602, y: 785, entrySide: 'top', voltageTier: '400V' },
+  C11: { x: 730, y: 795, entrySide: 'top', voltageTier: '400V', zoneId: 'ZONE_TX2' },
+  C12: { x: 1166, y: 795, entrySide: 'top', voltageTier: '400V', zoneId: 'ZONE_TX2' },
+  C13: { x: 1602, y: 795, entrySide: 'top', voltageTier: '400V', zoneId: 'ZONE_TX2' },
 
   // Level 4B-sub: C12 Downstream Feeders
-  C18: { x: 948, y: 960, entrySide: 'top', voltageTier: '400V' },
-  C19: { x: 1166, y: 960, entrySide: 'top', voltageTier: '400V' },
-  C20: { x: 1384, y: 960, entrySide: 'top', voltageTier: '400V' },
+  C18: { x: 948, y: 970, entrySide: 'top', voltageTier: '400V', zoneId: 'ZONE_TX2' },
+  C19: { x: 1166, y: 970, entrySide: 'top', voltageTier: '400V', zoneId: 'ZONE_TX2' },
+  C20: { x: 1384, y: 970, entrySide: 'top', voltageTier: '400V', zoneId: 'ZONE_TX2' },
 
   // Level 4C: Tx3 Feeders
-  C14: { x: 1860, y: 785, entrySide: 'top', voltageTier: '400V' },
-  C15: { x: 2078, y: 785, entrySide: 'top', voltageTier: '400V' },
-  C16: { x: 2300, y: 785, entrySide: 'top', voltageTier: '400V' },
-  C17: { x: 2518, y: 785, entrySide: 'top', voltageTier: '400V' }
+  C14: { x: 1860, y: 795, entrySide: 'top', voltageTier: '400V', zoneId: 'ZONE_TX3' },
+  C15: { x: 2078, y: 795, entrySide: 'top', voltageTier: '400V', zoneId: 'ZONE_TX3' },
+  C16: { x: 2300, y: 795, entrySide: 'top', voltageTier: '400V', zoneId: 'ZONE_TX3' },
+  C17: { x: 2518, y: 795, entrySide: 'top', voltageTier: '400V', zoneId: 'ZONE_TX3' }
 };
 
 interface BusbarLayoutSpec {
@@ -203,6 +226,7 @@ interface BusbarLayoutSpec {
   y: number;
   widthPx: number;
   voltageTier: PowerVoltageTier;
+  zoneId: SldZoneId;
   handles: SldHandleSpec[];
 }
 
@@ -212,6 +236,7 @@ const CANONICAL_BUSBARS: Record<string, BusbarLayoutSpec> = {
     y: 205,
     widthPx: 2360,
     voltageTier: '11kV',
+    zoneId: 'ZONE_11KV',
     handles: [
       { id: 'top-c1', type: 'target', position: 'top', leftPx: 416 },
       { id: 'top-c2', type: 'target', position: 'top', leftPx: 1318 },
@@ -223,9 +248,10 @@ const CANONICAL_BUSBARS: Record<string, BusbarLayoutSpec> = {
   },
   BUS_TX1: {
     x: 40,
-    y: 710,
+    y: 720,
     widthPx: 628,
     voltageTier: '400V',
+    zoneId: 'ZONE_TX1',
     handles: [
       { id: 'top-incomer', type: 'target', position: 'top', leftPx: 204 },
       { id: 'top-genset', type: 'target', position: 'top', leftPx: 460 },
@@ -236,9 +262,10 @@ const CANONICAL_BUSBARS: Record<string, BusbarLayoutSpec> = {
   },
   BUS_TX2: {
     x: 730,
-    y: 710,
+    y: 720,
     widthPx: 1064,
     voltageTier: '400V',
+    zoneId: 'ZONE_TX2',
     handles: [
       { id: 'top-incomer', type: 'target', position: 'top', leftPx: 532 },
       { id: 'bottom-0', type: 'source', position: 'bottom', leftPx: 96 },
@@ -248,9 +275,10 @@ const CANONICAL_BUSBARS: Record<string, BusbarLayoutSpec> = {
   },
   BUS_TX3: {
     x: 1860,
-    y: 710,
+    y: 720,
     widthPx: 850,
     voltageTier: '400V',
+    zoneId: 'ZONE_TX3',
     handles: [
       { id: 'top-incomer', type: 'target', position: 'top', leftPx: 425 },
       { id: 'bottom-0', type: 'source', position: 'bottom', leftPx: 96 },
@@ -260,6 +288,155 @@ const CANONICAL_BUSBARS: Record<string, BusbarLayoutSpec> = {
     ]
   }
 };
+
+interface ZoneSpec {
+  id: SldZoneId;
+  title: string;
+  subtitle: string;
+  voltageTier: PowerVoltageTier;
+  x: number;
+  y: number;
+  minWidth: number;
+  minHeight: number;
+}
+
+const CANONICAL_ZONES: ZoneSpec[] = [
+  {
+    id: 'ZONE_11KV',
+    title: '11 kV Main Switchroom & Power Sources',
+    subtitle: 'Utility Intake • Co-Gen Turbine • Legacy 6.3 kV Isolation',
+    voltageTier: '11kV',
+    x: 16,
+    y: 6,
+    minWidth: 2548,
+    minHeight: 262
+  },
+  {
+    id: 'ZONE_TX1',
+    title: 'Tx1 Distribution Switchboard (1600 kVA)',
+    subtitle: '11 kV / 415 V • Standby Gen-Set & Distillation / Boiler 2',
+    voltageTier: '400V',
+    x: 18,
+    y: 278,
+    minWidth: 672,
+    minHeight: 510
+  },
+  {
+    id: 'ZONE_TX2',
+    title: 'Tx2 Distribution Switchboard (800 kVA)',
+    subtitle: '11 kV / 420 V • Plant Services, Boiler 1 & C12 Sub-Feeders',
+    voltageTier: '400V',
+    x: 708,
+    y: 278,
+    minWidth: 1108,
+    minHeight: 510
+  },
+  {
+    id: 'ZONE_TX3',
+    title: 'Tx3 Distribution Switchboard (800 kVA)',
+    subtitle: '11 kV / 420 V • MCC 3, Compressors, Boiler 3 & New WTP',
+    voltageTier: '400V',
+    x: 1838,
+    y: 278,
+    minWidth: 894,
+    minHeight: 510
+  }
+];
+
+interface OccupiedRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+function rectsOverlap(a: OccupiedRect, b: OccupiedRect, padding = 18): boolean {
+  return !(
+    a.x + a.width + padding <= b.x ||
+    b.x + b.width + padding <= a.x ||
+    a.y + a.height + padding <= b.y ||
+    b.y + b.height + padding <= a.y
+  );
+}
+
+function resolveZoneIdForNode(
+  pn: PowerDistributionNode,
+  nodeMap: Map<string, PowerDistributionNode>,
+  assignedZones: Map<string, SldZoneId>
+): SldZoneId | null {
+  if (CANONICAL_BUSBARS[pn.id]) return CANONICAL_BUSBARS[pn.id].zoneId;
+  if (CANONICAL_PLACEMENTS[pn.id]) return CANONICAL_PLACEMENTS[pn.id].zoneId;
+
+  // Walk parent chain safely without cycles
+  const visited = new Set<string>();
+  let cursor: string | undefined = pn.parentNodeId;
+  while (cursor && !visited.has(cursor)) {
+    visited.add(cursor);
+    const known = assignedZones.get(cursor);
+    if (known) return known;
+    const parent = nodeMap.get(cursor);
+    if (!parent) break;
+    cursor = parent.parentNodeId;
+  }
+
+  switch (pn.transformerSource) {
+    case 'HV_11KV':
+      return 'ZONE_11KV';
+    case 'Tx1':
+      return 'ZONE_TX1';
+    case 'Tx2':
+      return 'ZONE_TX2';
+    case 'Tx3':
+      return 'ZONE_TX3';
+    default:
+      return null;
+  }
+}
+
+function findNonOverlappingSlot(
+  anchorX: number,
+  anchorY: number,
+  width: number,
+  height: number,
+  occupied: OccupiedRect[],
+  zoneBounds?: { minX: number; maxX: number }
+): { x: number; y: number } {
+  const stepX = 218;
+  const stepY = 166;
+  const maxCols = 6;
+
+  for (let row = 0; row < 12; row++) {
+    const y = anchorY + row * stepY;
+    for (let colOffset = 0; colOffset < maxCols; colOffset++) {
+      const candidates =
+        colOffset === 0
+          ? [anchorX]
+          : [anchorX + colOffset * stepX, anchorX - colOffset * stepX];
+
+      for (const candidateX of candidates) {
+        if (zoneBounds) {
+          if (candidateX < zoneBounds.minX || candidateX + width > zoneBounds.maxX) {
+            continue;
+          }
+        }
+        const rect: OccupiedRect = { x: candidateX, y, width, height };
+        if (!occupied.some(existing => rectsOverlap(rect, existing))) {
+          return { x: candidateX, y };
+        }
+      }
+    }
+  }
+
+  // Fallback below all currently occupied boxes
+  const maxBottom = occupied.reduce((max, r) => Math.max(max, r.y + r.height), anchorY);
+  return { x: anchorX, y: maxBottom + 36 };
+}
+
+function estimateMccPanelHeight(isExpanded: boolean, equipmentCount: number): number {
+  if (!isExpanded) return 112;
+  const rowsHeight = equipmentCount === 0 ? 34 : Math.min(240, equipmentCount * 44);
+  return 112 + rowsHeight;
+}
 
 function getPanelType(panelId: FeederPanelId): 'MCC' | 'DB' {
   if (
@@ -273,6 +450,15 @@ function getPanelType(panelId: FeederPanelId): 'MCC' | 'DB' {
     return 'MCC';
   }
   return 'DB';
+}
+
+interface PendingNodeEntry {
+  absX: number;
+  absY: number;
+  width: number;
+  height: number;
+  zoneId: SldZoneId | null;
+  node: Node;
 }
 
 export function buildSldDiagramElements(opts: SldBuildOptions): {
@@ -376,8 +562,11 @@ export function buildSldDiagramElements(opts: SldBuildOptions): {
     return true;
   };
 
-  const rfNodes: Node[] = [];
+  const pendingNodes: PendingNodeEntry[] = [];
   const placedPositions = new Map<string, { x: number; y: number }>();
+  const assignedZones = new Map<string, SldZoneId>();
+  const occupiedRects: OccupiedRect[] = [];
+  const zoneSpecMap = new Map<SldZoneId, ZoneSpec>(CANONICAL_ZONES.map(z => [z.id, z]));
 
   // 1. Place canonical busbar nodes
   for (const [busId, layout] of Object.entries(CANONICAL_BUSBARS)) {
@@ -417,15 +606,29 @@ export function buildSldDiagramElements(opts: SldBuildOptions): {
       onOpenNodeCondition
     };
 
-    rfNodes.push({
-      id: busId,
-      type: 'busbarNode',
-      position: { x: layout.x, y: layout.y },
-      data,
-      draggable: false,
-      selectable: true
+    pendingNodes.push({
+      absX: layout.x,
+      absY: layout.y,
+      width: layout.widthPx,
+      height: BUSBAR_HEIGHT,
+      zoneId: layout.zoneId,
+      node: {
+        id: busId,
+        type: 'busbarNode',
+        position: { x: layout.x, y: layout.y },
+        data,
+        draggable: false,
+        selectable: true
+      }
     });
     placedPositions.set(busId, { x: layout.x, y: layout.y });
+    assignedZones.set(busId, layout.zoneId);
+    occupiedRects.push({
+      x: layout.x,
+      y: layout.y,
+      width: layout.widthPx,
+      height: BUSBAR_HEIGHT
+    });
   }
 
   // 2. Place canonical equipment / breaker / transformer / source nodes
@@ -453,70 +656,40 @@ export function buildSldDiagramElements(opts: SldBuildOptions): {
       voltageTier: layout.voltageTier,
       entrySide: layout.entrySide || 'top',
       hasRightHandle: layout.hasRightHandle,
+      activeTerminals: {},
       onSelect: onSelectNode,
       onToggleExpand: isC12 ? onToggleBranch : undefined,
       onExpandHierarchyNode,
       onOpenNodeCondition
     };
 
-    rfNodes.push({
-      id: nodeId,
-      type: 'electricalEquipmentNode',
-      position: { x: layout.x, y: layout.y },
-      data,
-      draggable: false,
-      selectable: true
+    pendingNodes.push({
+      absX: layout.x,
+      absY: layout.y,
+      width: NODE_WIDTH,
+      height: EQUIPMENT_NODE_HEIGHT_ESTIMATE,
+      zoneId: layout.zoneId,
+      node: {
+        id: nodeId,
+        type: 'electricalEquipmentNode',
+        position: { x: layout.x, y: layout.y },
+        data,
+        draggable: false,
+        selectable: true
+      }
     });
     placedPositions.set(nodeId, { x: layout.x, y: layout.y });
-  }
-
-  // 3. Place any custom Firestore nodes not in canonical dictionary
-  const customChildIndex = new Map<string, number>();
-  for (const pn of powerNodes) {
-    if (CANONICAL_BUSBARS[pn.id] || CANONICAL_PLACEMENTS[pn.id]) continue;
-    const parentPos = pn.parentNodeId ? placedPositions.get(pn.parentNodeId) : undefined;
-    const idx = customChildIndex.get(pn.parentNodeId || 'ROOT') || 0;
-    customChildIndex.set(pn.parentNodeId || 'ROOT', idx + 1);
-
-    const x = parentPos ? parentPos.x + idx * 218 : 40 + idx * 218;
-    const y = parentPos ? parentPos.y + 170 : 1260;
-
-    const tier: PowerVoltageTier =
-      pn.transformerSource === 'HV_11KV' || pn.voltage.includes('11 kV') ? '11kV' : '400V';
-
-    const data: ElectricalEquipmentNodeData = {
-      powerNode: pn,
-      solvedState: solved.nodeStates.get(pn.id),
-      maintenanceCondition: resolveAssetMaintenanceCondition(
-        pn.id,
-        conditionSummaries,
-        pn.operatingState === 'DECOMMISSIONED'
-      ),
-      isSelected: selectedNodeId === pn.id,
-      isHighlightedPath: highlightedIds.has(pn.id),
-      isSearchMatch: matchedNodeSet.has(pn.id),
-      isDimmed: Boolean(query && !matchedNodeSet.has(pn.id)),
-      hasCollapsibleChildren: false,
-      isExpanded: false,
-      childCount: 0,
-      voltageTier: tier,
-      entrySide: 'top',
-      onSelect: onSelectNode,
-      onOpenNodeCondition
-    };
-
-    rfNodes.push({
-      id: pn.id,
-      type: 'electricalEquipmentNode',
-      position: { x, y },
-      data,
-      draggable: false,
-      selectable: true
+    assignedZones.set(nodeId, layout.zoneId);
+    occupiedRects.push({
+      x: layout.x,
+      y: layout.y,
+      width: NODE_WIDTH,
+      height: EQUIPMENT_NODE_HEIGHT_ESTIMATE
     });
-    placedPositions.set(pn.id, { x, y });
   }
 
-  // 4. Place MCC / Distribution Board panel nodes directly below each visible feeder breaker
+  // 3. Place MCC / Distribution Board panel nodes directly below each visible feeder breaker
+  //    (Placed before custom Firestore nodes so custom nodes never overlap MCC boxes)
   const rfEdges: Edge[] = [];
   const openJobCards = jobCards.filter(
     jc => jc.status !== 'Completed' && jc.status !== 'Cancelled'
@@ -592,13 +765,29 @@ export function buildSldDiagramElements(opts: SldBuildOptions): {
     };
 
     const panelY = breakerPos.y + 150;
-    rfNodes.push({
-      id: panelNodeId,
-      type: 'mccPanelNode',
-      position: { x: breakerPos.x, y: panelY },
-      data: panelData,
-      draggable: false,
-      selectable: false
+    const panelHeight = estimateMccPanelHeight(isLoadsExpanded, eqs.length);
+    const breakerZone = assignedZones.get(panel.breakerId) || null;
+
+    pendingNodes.push({
+      absX: breakerPos.x,
+      absY: panelY,
+      width: NODE_WIDTH,
+      height: panelHeight,
+      zoneId: breakerZone,
+      node: {
+        id: panelNodeId,
+        type: 'mccPanelNode',
+        position: { x: breakerPos.x, y: panelY },
+        data: panelData,
+        draggable: false,
+        selectable: false
+      }
+    });
+    occupiedRects.push({
+      x: breakerPos.x,
+      y: panelY,
+      width: NODE_WIDTH,
+      height: panelHeight
     });
 
     // Edge connecting Feeder Breaker -> MCC / DB Panel
@@ -620,12 +809,102 @@ export function buildSldDiagramElements(opts: SldBuildOptions): {
     });
   }
 
+  // 4. Collision-free placement for any custom Firestore nodes not in canonical dictionary
+  for (const pn of powerNodes) {
+    if (CANONICAL_BUSBARS[pn.id] || CANONICAL_PLACEMENTS[pn.id]) continue;
+
+    const parentPos = pn.parentNodeId ? placedPositions.get(pn.parentNodeId) : undefined;
+    const targetZoneId = resolveZoneIdForNode(pn, nodeMap, assignedZones);
+    const zoneSpec = targetZoneId ? zoneSpecMap.get(targetZoneId) : undefined;
+
+    const isHvZone = targetZoneId === 'ZONE_11KV';
+    const anchorX = isHvZone
+      ? 2460
+      : parentPos
+      ? parentPos.x
+      : zoneSpec
+      ? zoneSpec.x + 24
+      : 40;
+    const anchorY = isHvZone
+      ? 46
+      : parentPos
+      ? parentPos.y + 170
+      : zoneSpec
+      ? zoneSpec.y + zoneSpec.minHeight + 24
+      : 1260;
+
+    const slot = findNonOverlappingSlot(
+      anchorX,
+      anchorY,
+      NODE_WIDTH,
+      EQUIPMENT_NODE_HEIGHT_ESTIMATE,
+      occupiedRects,
+      isHvZone
+        ? { minX: 2450, maxX: 4000 }
+        : zoneSpec
+        ? {
+            minX: zoneSpec.x + 18,
+            maxX: zoneSpec.x + zoneSpec.minWidth - 18
+          }
+        : undefined
+    );
+
+    const tier: PowerVoltageTier =
+      pn.transformerSource === 'HV_11KV' || pn.voltage.includes('11 kV') ? '11kV' : '400V';
+
+    const data: ElectricalEquipmentNodeData = {
+      powerNode: pn,
+      solvedState: solved.nodeStates.get(pn.id),
+      maintenanceCondition: resolveAssetMaintenanceCondition(
+        pn.id,
+        conditionSummaries,
+        pn.operatingState === 'DECOMMISSIONED'
+      ),
+      isSelected: selectedNodeId === pn.id,
+      isHighlightedPath: highlightedIds.has(pn.id),
+      isSearchMatch: matchedNodeSet.has(pn.id),
+      isDimmed: Boolean(query && !matchedNodeSet.has(pn.id)),
+      hasCollapsibleChildren: false,
+      isExpanded: false,
+      childCount: 0,
+      voltageTier: tier,
+      entrySide: 'top',
+      activeTerminals: {},
+      onSelect: onSelectNode,
+      onOpenNodeCondition
+    };
+
+    pendingNodes.push({
+      absX: slot.x,
+      absY: slot.y,
+      width: NODE_WIDTH,
+      height: EQUIPMENT_NODE_HEIGHT_ESTIMATE,
+      zoneId: targetZoneId,
+      node: {
+        id: pn.id,
+        type: 'electricalEquipmentNode',
+        position: { x: slot.x, y: slot.y },
+        data,
+        draggable: false,
+        selectable: true
+      }
+    });
+    placedPositions.set(pn.id, { x: slot.x, y: slot.y });
+    if (targetZoneId) {
+      assignedZones.set(pn.id, targetZoneId);
+    }
+    occupiedRects.push({
+      x: slot.x,
+      y: slot.y,
+      width: NODE_WIDTH,
+      height: EQUIPMENT_NODE_HEIGHT_ESTIMATE
+    });
+  }
+
   // 5. Build all authoritative & custom power edges between visible power nodes
   for (const edge of solved.edges) {
     if (!placedPositions.has(edge.source) || !placedPositions.has(edge.target)) continue;
 
-    // For GEN_SET -> C7, C7 is below GEN_SET in our clean layout (sourceHandle bottom -> targetHandle top)
-    // For C7 -> BUS_TX1, bottom of C7 connects to top-genset handle of BUS_TX1
     const edgeEnergization = solved.edgeStates.get(edge.id) || 'DE_ENERGIZED';
     const isHighlighted =
       highlightedIds.has(edge.source) && highlightedIds.has(edge.target);
@@ -652,6 +931,116 @@ export function buildSldDiagramElements(opts: SldBuildOptions): {
       data: edgeData,
       zIndex: edge.edgeRole === 'INTERLOCK_TIE' ? 20 : isHighlighted ? 15 : 5
     });
+  }
+
+  // 6. Track only terminals actually referenced by visible edges so unused handles remain hidden
+  const terminalsByNode = new Map<string, ActiveTerminals>();
+  const markTerminal = (nodeId: string, handleId?: string | null) => {
+    if (!handleId) return;
+    if (
+      handleId !== 'top' &&
+      handleId !== 'bottom' &&
+      handleId !== 'left' &&
+      handleId !== 'right'
+    ) {
+      return;
+    }
+    const existing = terminalsByNode.get(nodeId) || {};
+    existing[handleId] = true;
+    terminalsByNode.set(nodeId, existing);
+  };
+
+  for (const edge of rfEdges) {
+    markTerminal(edge.source, edge.sourceHandle);
+    markTerminal(edge.target, edge.targetHandle);
+  }
+
+  // 7. Compute dynamic zone bounds enclosing all child nodes + emit zone group nodes FIRST
+  const computedZones = new Map<
+    SldZoneId,
+    { spec: ZoneSpec; x: number; y: number; width: number; height: number; hasMatch: boolean }
+  >();
+
+  for (const spec of CANONICAL_ZONES) {
+    const zoneChildren = pendingNodes.filter(entry => entry.zoneId === spec.id);
+    if (zoneChildren.length === 0) continue;
+
+    let maxRight = spec.x + spec.minWidth;
+    let maxBottom = spec.y + spec.minHeight;
+    let hasMatch = false;
+
+    const bottomPadding = spec.id === 'ZONE_11KV' ? 18 : 22;
+    for (const child of zoneChildren) {
+      maxRight = Math.max(maxRight, child.absX + child.width + 22);
+      maxBottom = Math.max(maxBottom, child.absY + child.height + bottomPadding);
+      if (matchedNodeSet.has(child.node.id)) {
+        hasMatch = true;
+      }
+    }
+
+    computedZones.set(spec.id, {
+      spec,
+      x: spec.x,
+      y: spec.y,
+      width: maxRight - spec.x,
+      height: maxBottom - spec.y,
+      hasMatch
+    });
+  }
+
+  const rfNodes: Node[] = [];
+
+  // Parent group containers MUST appear before children in React Flow
+  for (const spec of CANONICAL_ZONES) {
+    const zone = computedZones.get(spec.id);
+    if (!zone) continue;
+
+    const zoneData: SwitchboardZoneNodeData = {
+      zoneId: spec.id,
+      title: spec.title,
+      subtitle: spec.subtitle,
+      voltageTier: spec.voltageTier,
+      widthPx: zone.width,
+      heightPx: zone.height,
+      isDimmed: Boolean(query && !zone.hasMatch)
+    };
+
+    rfNodes.push({
+      id: spec.id,
+      type: 'switchboardZoneNode',
+      position: { x: zone.x, y: zone.y },
+      width: zone.width,
+      height: zone.height,
+      style: { width: zone.width, height: zone.height },
+      data: zoneData,
+      draggable: false,
+      selectable: false,
+      connectable: false,
+      focusable: false,
+      zIndex: -1
+    });
+  }
+
+  // Emit child nodes with parentId + relative coordinates, plus activeTerminals attached
+  for (const entry of pendingNodes) {
+    if (entry.node.type === 'electricalEquipmentNode') {
+      const data = entry.node.data as ElectricalEquipmentNodeData;
+      data.activeTerminals = terminalsByNode.get(entry.node.id) || {};
+    }
+
+    const parentZone = entry.zoneId ? computedZones.get(entry.zoneId) : undefined;
+    if (parentZone) {
+      rfNodes.push({
+        ...entry.node,
+        parentId: parentZone.spec.id,
+        position: {
+          x: entry.absX - parentZone.x,
+          y: entry.absY - parentZone.y
+        }
+      });
+    } else {
+      rfNodes.push(entry.node);
+    }
   }
 
   return {
