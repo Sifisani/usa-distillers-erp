@@ -7,7 +7,14 @@ const envApiKey = import.meta.env.VITE_FIREBASE_API_KEY?.trim();
 const envProjectId = import.meta.env.VITE_FIREBASE_PROJECT_ID?.trim();
 const envAppId = import.meta.env.VITE_FIREBASE_APP_ID?.trim();
 
+const hasAnyEnvOverride = Boolean(envApiKey || envProjectId || envAppId);
 const hasEnvOverride = Boolean(envApiKey && envProjectId && envAppId);
+
+if (hasAnyEnvOverride && !hasEnvOverride) {
+  throw new Error(
+    'Incomplete VITE_FIREBASE_* environment configuration: VITE_FIREBASE_API_KEY, VITE_FIREBASE_PROJECT_ID, and VITE_FIREBASE_APP_ID must all be set together.'
+  );
+}
 
 export const activeFirebaseConfig = hasEnvOverride
   ? {
