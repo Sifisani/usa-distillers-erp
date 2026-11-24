@@ -15,8 +15,10 @@ import {
   Send,
   Users,
   Package,
-  Shield,
-  Lock
+  ArrowRight,
+  CheckCircle2,
+  Factory,
+  ShieldCheck
 } from 'lucide-react';
 import { firebaseRuntimeInfo } from './firebase';
 import { Header } from './components/layout/Header';
@@ -140,6 +142,7 @@ import {
   getJobCardPermissionReason
 } from './core/jobcards/permissions';
 import { resolveWorkflowStage } from './core/jobcards/workflow';
+import { getFriendlyAuthError } from './utils/authErrors';
 
 function MainApp() {
   const { currentUser, userProfile, loading: authLoading, loginWithGoogle } = useAuth();
@@ -674,74 +677,136 @@ function MainApp() {
 
   if (!currentUser) {
     return (
-      <div className="min-h-screen bg-[#1b4332] flex items-center justify-center p-4 font-sans">
-        <div className="bg-white rounded-lg shadow-2xl border border-slate-200 max-w-md w-full overflow-hidden">
-          <div className="bg-[#714B67] text-white px-6 py-5">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded bg-white/10 border border-white/20 flex items-center justify-center">
-                <Lock className="w-5 h-5 text-amber-300" />
+      <main className="relative min-h-screen overflow-hidden bg-[#0d2d23] font-sans text-white">
+        <div className="absolute inset-0 opacity-40" aria-hidden="true">
+          <div className="absolute -left-40 -top-40 h-[34rem] w-[34rem] rounded-full bg-[#1d5843] blur-3xl" />
+          <div className="absolute -bottom-56 right-0 h-[38rem] w-[38rem] rounded-full bg-[#b89447]/20 blur-3xl" />
+          <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,.025)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.025)_1px,transparent_1px)] bg-[size:48px_48px]" />
+        </div>
+
+        <div className="relative mx-auto grid min-h-screen w-full max-w-7xl items-center gap-14 px-6 py-10 lg:grid-cols-[1.08fr_.92fr] lg:px-12 xl:px-16">
+          <section className="hidden max-w-xl lg:block">
+            <div className="mb-10 flex items-center gap-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-white/15 bg-white/10 shadow-lg shadow-black/10">
+                <Factory className="h-5 w-5 text-[#e3bf68]" />
               </div>
               <div>
-                <h1 className="text-lg font-bold tracking-tight">USA Distillers ERP</h1>
-                <p className="text-xs text-white/80">Great Usuthu Plant — Authenticated Workspace</p>
+                <p className="text-base font-extrabold tracking-tight">USA Distillers</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-100/55">Great Usuthu Plant</p>
               </div>
             </div>
-            <div className="mt-3 flex items-center justify-between text-[11px] font-mono bg-black/25 px-2.5 py-1.5 rounded border border-white/10">
-              <span className="flex items-center gap-1.5 text-emerald-300">
-                <Shield className="w-3.5 h-3.5" />
-                {firebaseRuntimeInfo.projectId}
-              </span>
-              <span className="uppercase text-[10px] font-sans font-bold px-1.5 py-0.5 rounded bg-white/15">
-                {firebaseRuntimeInfo.environment}
-              </span>
-            </div>
-          </div>
 
-          <div className="p-6 space-y-4">
-            <p className="text-xs text-slate-600 leading-relaxed">
-              Firestore security rules enforce authenticated plant access. Sign in with your Google workspace account or company credentials to synchronize work orders, machinery assets, and power distribution records.
+            <p className="mb-5 text-xs font-bold uppercase tracking-[0.22em] text-[#e3bf68]">
+              Plant operations, connected
+            </p>
+            <h1 className="max-w-lg text-4xl font-extrabold leading-[1.08] tracking-[-0.04em] text-white xl:text-5xl">
+              Keep every asset, work order and team in motion.
+            </h1>
+            <p className="mt-6 max-w-lg text-base leading-7 text-emerald-50/65">
+              One secure workspace for maintenance planning, equipment health, engineering workflows and real-time plant visibility.
             </p>
 
-            {authActionError && (
-              <div className="p-2.5 rounded bg-rose-50 border border-rose-200 text-rose-700 text-xs">
-                {authActionError}
+            <div className="mt-10 grid max-w-lg grid-cols-2 gap-3">
+              {[
+                'Real-time work orders',
+                'Asset maintenance',
+                'Role-based access',
+                'Operational reporting'
+              ].map((benefit) => (
+                <div key={benefit} className="flex items-center gap-2.5 text-sm font-semibold text-emerald-50/85">
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-[#e3bf68]" />
+                  {benefit}
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="mx-auto w-full max-w-[29rem]">
+            <div className="mb-7 flex items-center gap-3 lg:hidden">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-white/15 bg-white/10">
+                <Factory className="h-5 w-5 text-[#e3bf68]" />
               </div>
-            )}
+              <div>
+                <p className="font-extrabold">USA Distillers ERP</p>
+                <p className="text-xs text-emerald-100/60">Great Usuthu Plant</p>
+              </div>
+            </div>
 
-            <button
-              type="button"
-              disabled={authBusy}
-              onClick={async () => {
-                setAuthActionError(null);
-                setAuthBusy(true);
-                try {
-                  await loginWithGoogle();
-                } catch (err: any) {
-                  setAuthActionError(err.message || 'Google Sign-In failed.');
-                } finally {
-                  setAuthBusy(false);
-                }
-              }}
-              className="w-full flex items-center justify-center gap-2.5 bg-[#1b4332] hover:bg-[#143326] text-white py-2.5 px-4 rounded text-xs font-bold shadow-sm transition cursor-pointer disabled:opacity-50"
-            >
-              <span>{authBusy ? 'Signing in...' : 'Sign in with Google'}</span>
-            </button>
+            <div className="overflow-hidden rounded-2xl border border-white/15 bg-white text-slate-900 shadow-[0_28px_80px_rgba(0,0,0,.28)]">
+              <div className="p-7 sm:p-9">
+                <div className="mb-8">
+                  <div className="mb-5 flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-950 text-[#e3bf68]">
+                    <ShieldCheck className="h-5 w-5" />
+                  </div>
+                  <h2 className="text-2xl font-extrabold tracking-[-0.03em] text-slate-950">Welcome back</h2>
+                  <p className="mt-2 text-sm leading-6 text-slate-500">
+                    Sign in with your company account to access the plant workspace.
+                  </p>
+                </div>
 
-            <button
-              type="button"
-              onClick={() => setIsLoginModalOpen(true)}
-              className="w-full py-2 px-4 rounded border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold transition cursor-pointer"
-            >
-              Sign in with Email / Staff Options
-            </button>
-          </div>
+                {authActionError && (
+                  <div role="alert" className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-3.5 text-sm leading-5 text-amber-900">
+                    {authActionError}
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  disabled={authBusy}
+                  onClick={async () => {
+                    setAuthActionError(null);
+                    setAuthBusy(true);
+                    try {
+                      await loginWithGoogle();
+                    } catch (err: unknown) {
+                      setAuthActionError(getFriendlyAuthError(err));
+                    } finally {
+                      setAuthBusy(false);
+                    }
+                  }}
+                  className="group flex w-full cursor-pointer items-center justify-center gap-3 rounded-xl bg-[#123d2f] px-4 py-3.5 text-sm font-bold text-white shadow-sm transition hover:bg-[#0d3025] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-800 disabled:cursor-wait disabled:opacity-60"
+                >
+                  {authBusy ? 'Opening secure sign-in…' : 'Continue with Google Workspace'}
+                  {!authBusy && <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />}
+                </button>
+
+                <div className="my-5 flex items-center gap-3">
+                  <div className="h-px flex-1 bg-slate-200" />
+                  <span className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">or</span>
+                  <div className="h-px flex-1 bg-slate-200" />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setIsLoginModalOpen(true)}
+                  className="w-full cursor-pointer rounded-xl border border-slate-300 bg-white px-4 py-3.5 text-sm font-bold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-800"
+                >
+                  Sign in with company email
+                </button>
+
+                <div className="mt-7 flex items-center justify-center gap-2 text-xs font-medium text-slate-400">
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  Protected company workspace
+                </div>
+              </div>
+              {!firebaseRuntimeInfo.isProduction && (
+                <div className="border-t border-slate-100 bg-slate-50 px-7 py-3 text-center text-[10px] font-bold uppercase tracking-[0.15em] text-slate-400">
+                  Development environment
+                </div>
+              )}
+            </div>
+
+            <p className="mt-6 text-center text-xs leading-5 text-emerald-100/45">
+              Authorized personnel only · Access is monitored and protected
+            </p>
+          </section>
         </div>
 
         <LoginModal
           isOpen={isLoginModalOpen}
           onClose={() => setIsLoginModalOpen(false)}
         />
-      </div>
+      </main>
     );
   }
 
