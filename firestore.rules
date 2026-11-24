@@ -602,13 +602,14 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
-    // User Profiles Collection (PII isolated to owner or admin)
+    // User Profiles Collection (PII isolated to owner or admin; self-creation restricted to least-privilege Operator role)
     match /users/{userId} {
       allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
       allow list: if isAdmin();
-      allow create: if isOwner(userId) && isValidId(userId) && isValidUserProfile(incoming()) &&
-                       incoming().uid == request.auth.uid &&
-                       (incoming().role != 'Admin' || isAdmin());
+      allow create: if isValidId(userId) && isValidUserProfile(incoming()) && (
+        (isAdmin() && incoming().uid == userId) ||
+        (isOwner(userId) && incoming().uid == request.auth.uid && incoming().role == 'Operator')
+      );
       allow update: if isValidId(userId) && isValidUserProfile(incoming()) && (
         isAdmin() ||
         (isOwner(userId) && incoming().uid == existing().uid && incoming().role == existing().role)

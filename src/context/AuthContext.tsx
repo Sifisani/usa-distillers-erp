@@ -131,12 +131,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           // Profile document may not exist yet for first-time Google sign-in
         }
 
+        const isVerifiedPrimaryAdmin = user.email === 'sifisani@gmail.com' && user.emailVerified;
         const fallbackProfile: UserProfile = {
           uid: user.uid,
           email: user.email || `operator@${firebaseRuntimeInfo.projectId}.internal`,
           displayName: user.displayName || user.email?.split('@')[0] || 'Distillery Staff',
           department: 'Engineering - Mechanical Maintenance',
-          role: user.email === 'sifisani@gmail.com' ? 'Admin' : 'Supervisor',
+          role: isVerifiedPrimaryAdmin ? 'Admin' : 'Operator',
           avatarColor: 'bg-indigo-600'
         };
         setUserProfile(fallbackProfile);
@@ -161,6 +162,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         localStorage.removeItem(PERSONA_STORAGE_KEY);
       }
 
+      const isVerifiedPrimaryAdmin = user.email === 'sifisani@gmail.com' && user.emailVerified;
+      const defaultRole: UserProfile['role'] = isVerifiedPrimaryAdmin ? 'Admin' : 'Operator';
+
       try {
         const userDocRef = doc(db, 'users', user.uid);
         const existingSnap = await getDoc(userDocRef);
@@ -173,7 +177,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           email: user.email || '',
           displayName: user.displayName || user.email?.split('@')[0] || 'Distillery User',
           department: 'Engineering - Mechanical Maintenance',
-          role: 'Supervisor',
+          role: defaultRole,
           avatarColor: 'bg-[#714B67]'
         };
         await setDoc(userDocRef, newProfile);
@@ -184,7 +188,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           email: user.email || '',
           displayName: user.displayName || user.email?.split('@')[0] || 'Distillery User',
           department: 'Engineering - Mechanical Maintenance',
-          role: user.email === 'sifisani@gmail.com' ? 'Admin' : 'Supervisor',
+          role: defaultRole,
           avatarColor: 'bg-[#714B67]'
         });
       }
@@ -200,15 +204,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!firebaseRuntimeInfo.isProduction) {
         localStorage.removeItem(PERSONA_STORAGE_KEY);
       }
-      const profile: UserProfile = {
-        uid: cred.user.uid,
-        email: cred.user.email || email,
-        displayName: cred.user.displayName || email.split('@')[0],
-        department: 'Engineering - Mechanical Maintenance',
-        role: 'Supervisor',
-        avatarColor: 'bg-[#714B67]'
-      };
-      setUserProfile(profile);
+
+      const isVerifiedPrimaryAdmin = cred.user.email === 'sifisani@gmail.com' && cred.user.emailVerified;
+      const defaultRole: UserProfile['role'] = isVerifiedPrimaryAdmin ? 'Admin' : 'Operator';
+
+      try {
+        const userDocRef = doc(db, 'users', cred.user.uid);
+        const existingSnap = await getDoc(userDocRef);
+        if (existingSnap.exists()) {
+          setUserProfile(existingSnap.data() as UserProfile);
+          return;
+        }
+        const newProfile: UserProfile = {
+          uid: cred.user.uid,
+          email: cred.user.email || email,
+          displayName: cred.user.displayName || email.split('@')[0],
+          department: 'Engineering - Mechanical Maintenance',
+          role: defaultRole,
+          avatarColor: 'bg-[#714B67]'
+        };
+        await setDoc(userDocRef, newProfile);
+        setUserProfile(newProfile);
+      } catch {
+        setUserProfile({
+          uid: cred.user.uid,
+          email: cred.user.email || email,
+          displayName: cred.user.displayName || email.split('@')[0],
+          department: 'Engineering - Mechanical Maintenance',
+          role: defaultRole,
+          avatarColor: 'bg-[#714B67]'
+        });
+      }
     } finally {
       setLoading(false);
     }
@@ -219,11 +245,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     pass: string,
     name: string,
     dept: string,
-    role: UserProfile['role'] = 'Technician'
+    _requestedRole?: UserProfile['role']
   ) => {
+    if (firebaseRuntimeInfo.isProduction) {
+      throw new Error('PROD_REGISTRATION_DISABLED');
+    }
+
     setLoading(true);
     try {
-      const safeRole: UserProfile['role'] = role === 'Admin' ? 'Supervisor' : role;
+      // Security requirement: self-registration never grants elevated roles; admins promote users via Firestore
+      const assignedRole: UserProfile['role'] = 'Operator';
       const cred = await createUserWithEmailAndPassword(auth, email, pass);
       await updateProfile(cred.user, { displayName: name });
       const profile: UserProfile = {
@@ -231,7 +262,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         email,
         displayName: name,
         department: dept,
-        role: safeRole,
+        role: assignedRole,
         avatarColor: 'bg-indigo-600'
       };
 
@@ -249,7 +280,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const applyDevPersonaWithFirebaseAuth = async (profile: UserProfile) => {
     if (firebaseRuntimeInfo.isProduction) {
-      throw new Error('Staff role switching is disabled in production. Sign in with your company account.');
+      throw new Error('PROD_PREVIEW_DISABLED');
     }
 
     const user = auth.currentUser || (await signInAnonymously(auth)).user;
@@ -263,7 +294,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!existingSnap.exists()) {
         await setDoc(userRef, {
           ...activeProfile,
-          role: activeProfile.role === 'Admin' ? 'Supervisor' : activeProfile.role
+          role: 'Operator'
         });
       }
     } catch {
