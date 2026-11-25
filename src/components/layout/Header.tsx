@@ -11,7 +11,8 @@ import {
   CheckCheck,
   AlertTriangle,
   Info,
-  BellRing
+  BellRing,
+  Settings
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { firebaseRuntimeInfo } from '../../firebase';
@@ -357,6 +358,17 @@ export const Header: React.FC<HeaderProps> = ({
                 </div>
 
                 <div className="border-t border-slate-100 pt-1 mt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowUserDropdown(false);
+                      onSelectView?.('settings');
+                    }}
+                    className="w-full text-left px-3 py-1.5 hover:bg-slate-100 flex items-center space-x-2 text-slate-700 cursor-pointer"
+                  >
+                    <Settings className="w-3.5 h-3.5 text-slate-500" />
+                    <span>Plant Settings &amp; User Access</span>
+                  </button>
                   <button
                     onClick={() => {
                       setShowUserDropdown(false);

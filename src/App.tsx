@@ -233,9 +233,14 @@ function MainApp() {
       }
     );
 
-    const unsubSlips = subscribeStoresSlips((slips) => {
-      setStoresSlips(slips);
-    });
+    const unsubSlips = subscribeStoresSlips(
+      (slips) => {
+        setStoresSlips(slips);
+      },
+      (err) => {
+        console.error('Stores slips subscription error:', err);
+      }
+    );
 
     const unsubPower = subscribePowerNodes(
       (nodes) => {

@@ -21,7 +21,8 @@ import {
   Radio,
   Newspaper,
   CheckCircle2,
-  X
+  X,
+  Settings
 } from 'lucide-react';
 import { useOrgMasterData } from '../../context/OrgMasterDataContext';
 
@@ -345,7 +346,7 @@ export const EnterpriseLaunchpad: React.FC<EnterpriseLaunchpadProps> = ({
             Operational Support & Company Services
           </h3>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {/* 1. CONTACTS FOR MANAGEMENT & KEY TECHNICAL STAFF (Ui1) */}
             <div
               onClick={() => setShowContactsModal(true)}
@@ -356,10 +357,10 @@ export const EnterpriseLaunchpad: React.FC<EnterpriseLaunchpadProps> = ({
               </div>
               <div>
                 <h4 className="text-sm font-bold text-slate-900">
-                  Key Staff & Standby Roster
+                  Key Staff &amp; Standby Roster
                 </h4>
                 <p className="text-[11px] text-slate-500">
-                  Direct callout contacts for 42 artisans, operators & supervisors.
+                  Direct callout contacts for 42 artisans, operators &amp; supervisors.
                 </p>
               </div>
             </div>
@@ -374,10 +375,10 @@ export const EnterpriseLaunchpad: React.FC<EnterpriseLaunchpadProps> = ({
               </div>
               <div>
                 <h4 className="text-sm font-bold text-slate-900">
-                  Plant Bulletins & Stop Days
+                  Plant Bulletins &amp; Stop Days
                 </h4>
                 <p className="text-[11px] text-slate-500">
-                  Steam shutdown notices, river intake status & shift broadcasts.
+                  Steam shutdown notices, river intake status &amp; shift broadcasts.
                 </p>
               </div>
             </div>
@@ -395,10 +396,29 @@ export const EnterpriseLaunchpad: React.FC<EnterpriseLaunchpadProps> = ({
                   About USA Distillers (Pty) Ltd
                 </h4>
                 <p className="text-[11px] text-slate-500">
-                  Great Usuthu facility specs, 3MW power generation & alcohol grades.
+                  Great Usuthu facility specs, 3MW power generation &amp; alcohol grades.
                 </p>
               </div>
             </div>
+
+            {/* 4. PLANT SETTINGS & USER ACCESS */}
+            <button
+              type="button"
+              onClick={() => onNavigate('settings')}
+              className="bg-white hover:bg-slate-50 border border-slate-300 hover:border-emerald-600 rounded-xl p-4 shadow-xs transition cursor-pointer flex items-center space-x-3 text-left"
+            >
+              <div className="w-10 h-10 rounded-lg bg-[#714B67]/15 text-[#714B67] flex items-center justify-center shrink-0">
+                <Settings className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="text-sm font-bold text-slate-900">
+                  Plant Settings &amp; User Access
+                </h4>
+                <p className="text-[11px] text-slate-500">
+                  Environment status, Admin staff roles, org master data &amp; backups.
+                </p>
+              </div>
+            </button>
           </div>
         </div>
 

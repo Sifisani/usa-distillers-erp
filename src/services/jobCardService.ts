@@ -4,9 +4,10 @@ import {
   setDoc,
   updateDoc,
   deleteDoc,
-  onSnapshot
+  onSnapshot,
+  writeBatch
 } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType, auth } from '../firebase';
+import { db, handleFirestoreError, OperationType, auth, firebaseRuntimeInfo } from '../firebase';
 import {
   JobCard,
   JobCardStatus,
@@ -296,7 +297,7 @@ export function subscribeJobCards(
     q,
     async (snapshot) => {
       if (snapshot.empty) {
-        if (!autoSeedAttempted) {
+        if (!firebaseRuntimeInfo.isProduction && !autoSeedAttempted) {
           autoSeedAttempted = true;
           try {
             await seedInitialJobCards();
@@ -389,14 +390,27 @@ export function subscribeJobCards(
   );
 }
 
-export async function seedInitialJobCards() {
+export async function seedInitialJobCards(): Promise<void> {
+  if (firebaseRuntimeInfo.isProduction) {
+    throw new Error('Demo job card seeding is disabled in production environments.');
+  }
   const actorUid = auth.currentUser?.uid;
+  const batch = writeBatch(db);
   for (const item of INITIAL_JOB_CARDS) {
     const docRef = doc(collection(db, COLLECTION_NAME));
-    await setDoc(docRef, stripUndefinedDeep({
-      ...item,
-      createdById: actorUid || item.createdById
-    }));
+    batch.set(
+      docRef,
+      stripUndefinedDeep({
+        ...item,
+        createdById: actorUid || item.createdById
+      })
+    );
+  }
+  try {
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, COLLECTION_NAME);
+    throw error;
   }
 }
 

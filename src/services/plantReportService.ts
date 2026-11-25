@@ -9,7 +9,7 @@ import {
   limit,
   Timestamp
 } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db, firebaseRuntimeInfo } from '../firebase';
 import { DailyPlantReport } from '../types';
 
 const COLLECTION_NAME = 'dailyPlantReports';
@@ -230,8 +230,10 @@ export function subscribeDailyPlantReports(
           saveLocalReports(list);
           onUpdate(list);
         } else {
-          // If Firestore is empty, seed official baseline
-          savePlantReport(OFFICIAL_BASELINE_REPORT).catch(() => {});
+          // Only auto-seed reference baseline in non-production environments
+          if (!firebaseRuntimeInfo.isProduction) {
+            savePlantReport(OFFICIAL_BASELINE_REPORT).catch(() => {});
+          }
           onUpdate([OFFICIAL_BASELINE_REPORT]);
         }
       },

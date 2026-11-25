@@ -1,6 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
-  Settings,
   Building,
   Database,
   Download,
@@ -14,28 +13,39 @@ import {
   Cpu,
   Radio,
   Zap,
-  Check,
   Users,
   Clock,
   Wrench,
   Plus,
   Trash2,
   Save,
-  Lock
+  Lock,
+  UserCog,
+  Search
 } from 'lucide-react';
 import {
   JobCard,
   Equipment,
-  OrgMasterDataConfig
+  OrgMasterDataConfig,
+  UserProfile
 } from '../../types';
 import { seedInitialJobCards } from '../../services/jobCardService';
-import { seedInitialEquipment } from '../../services/equipmentService';
+import {
+  seedInitialEquipment,
+  syncOfficialPlantEquipmentRegistry
+} from '../../services/equipmentService';
+import {
+  subscribeAllUserProfiles,
+  updateUserRoleAndProfile
+} from '../../services/userService';
 import { eventBus, DomainEvent } from '../../core/events/eventBus';
 import { OrganogramExplorer } from '../organization/OrganogramExplorer';
 import { firebaseRuntimeInfo } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { useOrgMasterData } from '../../context/OrgMasterDataContext';
 import { canHODSignOffJobCard } from '../../core/jobcards/permissions';
+import { isAuthorizedElectricalEngineer } from '../../core/electrical/permissions';
+import { canManageUserRoles, VALID_USER_ROLES } from '../../core/auth/userManagement';
 import { validateOrgMasterData } from '../../core/master-data/orgMasterData';
 import { COMPANY_ORGANOGRAM } from '../../core/master-data/organization';
 
@@ -50,8 +60,38 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ jobCards, equipmentL
 
   const [reSeeding, setReSeeding] = useState(false);
   const [confirmReSeed, setConfirmReSeed] = useState(false);
-  const [seedSuccess, setSeedSuccess] = useState(false);
+  const [seedMessage, setSeedMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [syncingBaseline, setSyncingBaseline] = useState(false);
+  const [confirmBaselineSync, setConfirmBaselineSync] = useState(false);
   const [events, setEvents] = useState<DomainEvent[]>(() => eventBus.getHistory());
+
+  const activeUid = currentUser?.uid || userProfile?.uid || '';
+  const actorContext = useMemo(
+    () => ({
+      uid: activeUid,
+      role: userProfile?.role,
+      email: userProfile?.email || currentUser?.email
+    }),
+    [activeUid, userProfile?.role, userProfile?.email, currentUser?.email]
+  );
+
+  // Admin User & Role Management state
+  const canAdminUsers = canManageUserRoles(actorContext);
+  const canSyncBaseline = isAuthorizedElectricalEngineer(
+    userProfile?.role,
+    userProfile?.email || currentUser?.email
+  );
+  const [userDirectory, setUserDirectory] = useState<UserProfile[]>([]);
+  const [loadingUsers, setLoadingUsers] = useState(false);
+  const [userSearch, setUserSearch] = useState('');
+  const [userDrafts, setUserDrafts] = useState<
+    Record<string, { role: UserProfile['role']; department: string; title: string }>
+  >({});
+  const [savingUserUid, setSavingUserUid] = useState<string | null>(null);
+  const [userMgmtFeedback, setUserMgmtFeedback] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
 
   // Configurable Org Master Data editor state
   const canManageOrgConfig = canHODSignOffJobCard(
@@ -67,11 +107,43 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ jobCards, equipmentL
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newCategoryDept, setNewCategoryDept] = useState('');
 
+  const departmentOptions = useMemo(
+    () =>
+      departmentsByCategory.flatMap((group) =>
+        group.departments.map((dept) => `${group.category} - ${dept}`)
+      ),
+    [departmentsByCategory]
+  );
+
   useEffect(() => {
     if (!isOrgDirty) {
       setDraftOrgConfig(liveOrgConfig);
     }
   }, [liveOrgConfig, isOrgDirty]);
+
+  useEffect(() => {
+    if (!canAdminUsers) {
+      setUserDirectory([]);
+      setLoadingUsers(false);
+      return;
+    }
+    setLoadingUsers(true);
+    const unsub = subscribeAllUserProfiles(
+      actorContext,
+      (profiles) => {
+        setUserDirectory(profiles);
+        setLoadingUsers(false);
+      },
+      (err) => {
+        setLoadingUsers(false);
+        setUserMgmtFeedback({
+          type: 'error',
+          text: err.message || 'Failed to load staff user directory from Firestore.'
+        });
+      }
+    );
+    return () => unsub();
+  }, [canAdminUsers, actorContext]);
 
   useEffect(() => {
     setEvents(eventBus.getHistory());
@@ -87,6 +159,48 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ jobCards, equipmentL
       unsub4();
     };
   }, []);
+
+  const filteredUsers = useMemo(() => {
+    const q = userSearch.trim().toLowerCase();
+    if (!q) return userDirectory;
+    return userDirectory.filter(
+      (u) =>
+        u.displayName.toLowerCase().includes(q) ||
+        u.email.toLowerCase().includes(q) ||
+        u.department.toLowerCase().includes(q) ||
+        u.role.toLowerCase().includes(q) ||
+        (u.title || '').toLowerCase().includes(q)
+    );
+  }, [userDirectory, userSearch]);
+
+  const handleSaveUserRole = async (target: UserProfile) => {
+    const draft = userDrafts[target.uid] || {
+      role: target.role,
+      department: target.department,
+      title: target.title || ''
+    };
+    setSavingUserUid(target.uid);
+    setUserMgmtFeedback(null);
+    try {
+      await updateUserRoleAndProfile(target, draft, actorContext);
+      setUserDrafts((prev) => {
+        const next = { ...prev };
+        delete next[target.uid];
+        return next;
+      });
+      setUserMgmtFeedback({
+        type: 'success',
+        text: `Updated access for ${target.displayName} (${draft.role} • ${draft.department}).`
+      });
+    } catch (err: any) {
+      setUserMgmtFeedback({
+        type: 'error',
+        text: err?.message || `Failed to update role for ${target.displayName}.`
+      });
+    } finally {
+      setSavingUserUid(null);
+    }
+  };
 
   // Export JSON
   const handleExportJSON = () => {
@@ -140,14 +254,50 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ jobCards, equipmentL
     URL.revokeObjectURL(url);
   };
 
+  const handleConfirmSyncBaseline = async () => {
+    setSyncingBaseline(true);
+    setSeedMessage(null);
+    try {
+      const { syncedCount } = await syncOfficialPlantEquipmentRegistry();
+      setConfirmBaselineSync(false);
+      setSeedMessage({
+        type: 'success',
+        text: `Synced ${syncedCount} official plant machinery assets into Firestore (${firebaseRuntimeInfo.projectId}).`
+      });
+    } catch (err: any) {
+      setSeedMessage({
+        type: 'error',
+        text: err?.message || 'Failed to sync plant equipment baseline.'
+      });
+    } finally {
+      setSyncingBaseline(false);
+    }
+  };
+
   const handleConfirmReSeedData = async () => {
+    if (firebaseRuntimeInfo.isProduction) {
+      setSeedMessage({
+        type: 'error',
+        text: 'Demo data seeding is disabled in production.'
+      });
+      setConfirmReSeed(false);
+      return;
+    }
     setReSeeding(true);
+    setSeedMessage(null);
     try {
       await seedInitialEquipment();
       await seedInitialJobCards();
-      setSeedSuccess(true);
       setConfirmReSeed(false);
-      setTimeout(() => setSeedSuccess(false), 4000);
+      setSeedMessage({
+        type: 'success',
+        text: 'Demo plant records and sample job cards have been seeded into development Firestore.'
+      });
+    } catch (err: any) {
+      setSeedMessage({
+        type: 'error',
+        text: err?.message || 'Failed to seed demo data.'
+      });
     } finally {
       setReSeeding(false);
     }
@@ -195,10 +345,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ jobCards, equipmentL
         </p>
       </div>
 
-      {seedSuccess && (
-        <div className="p-3 rounded bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center gap-2">
-          <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-          <span>Default plant records and job cards have been successfully seeded into Firestore!</span>
+      {seedMessage && (
+        <div
+          className={`p-3 rounded border text-xs flex items-center gap-2 ${
+            seedMessage.type === 'success'
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+              : 'bg-rose-50 border-rose-200 text-rose-800'
+          }`}
+        >
+          {seedMessage.type === 'success' ? (
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+          ) : (
+            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+          )}
+          <span>{seedMessage.text}</span>
         </div>
       )}
 
@@ -277,6 +437,216 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ jobCards, equipmentL
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Admin User & Role Management (/users collection) */}
+      <div className="bg-white p-5 rounded-md border border-slate-200 shadow-2xs space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
+          <div>
+            <h3 className="font-bold text-sm text-slate-800 flex items-center gap-2">
+              <UserCog className="w-4 h-4 text-[#714B67]" />
+              <span>User &amp; Role Access Control</span>
+            </h3>
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              Staff sign in once with Google Workspace or company email as least-privilege <span className="font-semibold">Operator</span>, then an Administrator assigns their operational role here.
+            </p>
+          </div>
+          {canAdminUsers ? (
+            <span className="px-2.5 py-1 rounded bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-semibold">
+              {userDirectory.length} Registered User{userDirectory.length === 1 ? '' : 's'}
+            </span>
+          ) : (
+            <span className="px-2.5 py-1 rounded bg-slate-100 border border-slate-200 text-slate-600 text-[11px] font-semibold flex items-center gap-1.5">
+              <Lock className="w-3 h-3 text-slate-500" />
+              Administrator Access Only (Your role: {userProfile?.role || 'Operator'})
+            </span>
+          )}
+        </div>
+
+        {canAdminUsers ? (
+          <div className="space-y-3 text-xs">
+            {userMgmtFeedback && (
+              <div
+                className={`p-2.5 rounded border text-xs flex items-center gap-2 ${
+                  userMgmtFeedback.type === 'success'
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                    : 'bg-rose-50 border-rose-200 text-rose-800'
+                }`}
+              >
+                {userMgmtFeedback.type === 'success' ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                )}
+                <span>{userMgmtFeedback.text}</span>
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="relative flex-1 min-w-[220px] max-w-sm">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={userSearch}
+                  onChange={(e) => setUserSearch(e.target.value)}
+                  placeholder="Filter staff by name, email, department, or role..."
+                  className="w-full pl-8 pr-3 py-1.5 rounded border border-slate-300 bg-white text-xs focus:border-[#714B67] focus:outline-none"
+                />
+              </div>
+              <span className="text-[11px] text-slate-500">
+                Changes save directly to Firestore <span className="font-mono">/users</span> and take effect immediately.
+              </span>
+            </div>
+
+            {loadingUsers ? (
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded text-center text-slate-500">
+                Loading registered staff directory...
+              </div>
+            ) : filteredUsers.length === 0 ? (
+              <div className="p-4 bg-slate-50 border border-dashed border-slate-200 rounded text-center text-slate-500">
+                {userDirectory.length === 0
+                  ? 'No registered user documents found yet in this environment.'
+                  : 'No users match the current search filter.'}
+              </div>
+            ) : (
+              <div className="overflow-x-auto border border-slate-200 rounded-md">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-[11px] text-slate-600 uppercase">
+                      <th className="py-2 px-3 font-bold">Staff Member</th>
+                      <th className="py-2 px-3 font-bold">Role</th>
+                      <th className="py-2 px-3 font-bold">Department</th>
+                      <th className="py-2 px-3 font-bold">Title (Optional)</th>
+                      <th className="py-2 px-3 font-bold text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filteredUsers.map((u) => {
+                      const draft = userDrafts[u.uid] || {
+                        role: u.role,
+                        department: u.department,
+                        title: u.title || ''
+                      };
+                      const isDirty =
+                        draft.role !== u.role ||
+                        draft.department !== u.department ||
+                        draft.title !== (u.title || '');
+                      const isSelf = Boolean(activeUid && u.uid === activeUid);
+                      const deptOptionsWithCurrent = departmentOptions.includes(draft.department)
+                        ? departmentOptions
+                        : [draft.department, ...departmentOptions];
+
+                      return (
+                        <tr key={u.uid} className="hover:bg-slate-50/70">
+                          <td className="py-2.5 px-3 align-middle">
+                            <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                              <span>{u.displayName}</span>
+                              {isSelf && (
+                                <span className="px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                                  You
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-slate-500">{u.email}</div>
+                            <div className="text-[10px] text-slate-400 font-mono truncate max-w-[180px]" title={u.uid}>
+                              {u.uid}
+                            </div>
+                          </td>
+                          <td className="py-2.5 px-3 align-middle">
+                            <select
+                              aria-label={`Role for ${u.displayName}`}
+                              disabled={savingUserUid === u.uid || isSelf}
+                              title={isSelf ? 'Ask another Admin before changing your own role' : 'Assign operational role'}
+                              value={draft.role}
+                              onChange={(e) =>
+                                setUserDrafts((prev) => ({
+                                  ...prev,
+                                  [u.uid]: {
+                                    ...draft,
+                                    role: e.target.value as UserProfile['role']
+                                  }
+                                }))
+                              }
+                              className="px-2 py-1 rounded border border-slate-300 bg-white text-xs font-semibold text-slate-800 disabled:bg-slate-100 disabled:text-slate-500"
+                            >
+                              {VALID_USER_ROLES.map((r) => (
+                                <option key={r} value={r}>
+                                  {r}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="py-2.5 px-3 align-middle">
+                            <select
+                              aria-label={`Department for ${u.displayName}`}
+                              disabled={savingUserUid === u.uid}
+                              value={draft.department}
+                              onChange={(e) =>
+                                setUserDrafts((prev) => ({
+                                  ...prev,
+                                  [u.uid]: {
+                                    ...draft,
+                                    department: e.target.value
+                                  }
+                                }))
+                              }
+                              className="w-full min-w-[190px] px-2 py-1 rounded border border-slate-300 bg-white text-xs text-slate-800 disabled:bg-slate-100"
+                            >
+                              {deptOptionsWithCurrent.map((d) => (
+                                <option key={d} value={d}>
+                                  {d}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="py-2.5 px-3 align-middle">
+                            <input
+                              type="text"
+                              aria-label={`Title for ${u.displayName}`}
+                              disabled={savingUserUid === u.uid}
+                              value={draft.title}
+                              onChange={(e) =>
+                                setUserDrafts((prev) => ({
+                                  ...prev,
+                                  [u.uid]: {
+                                    ...draft,
+                                    title: e.target.value
+                                  }
+                                }))
+                              }
+                              placeholder="e.g. Shift Supervisor"
+                              className="w-full min-w-[140px] px-2 py-1 rounded border border-slate-300 bg-white text-xs disabled:bg-slate-100"
+                            />
+                          </td>
+                          <td className="py-2.5 px-3 align-middle text-right">
+                            <button
+                              type="button"
+                              disabled={!isDirty || savingUserUid === u.uid}
+                              onClick={() => handleSaveUserRole(u)}
+                              className="px-2.5 py-1 rounded bg-[#1b4332] hover:bg-[#143326] text-white text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer disabled:opacity-40 disabled:cursor-default"
+                            >
+                              <Save className="w-3 h-3" />
+                              <span>{savingUserUid === u.uid ? 'Saving...' : 'Save'}</span>
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="p-3.5 rounded bg-slate-50 border border-slate-200 text-xs text-slate-600 flex items-center justify-between flex-wrap gap-2">
+            <div>
+              Signed in as <strong className="text-slate-900">{userProfile?.displayName || currentUser?.email}</strong> ({userProfile?.role || 'Operator'} • {userProfile?.department || 'General'}).
+            </div>
+            <span className="text-[11px] text-slate-500">
+              Contact a system Administrator to update operational permissions.
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Configurable Plant Org Master Data Panel (/orgMasterData/plant-default) */}
@@ -857,36 +1227,74 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ jobCards, equipmentL
             <span>Export Full Backup (JSON)</span>
           </button>
 
-          {!confirmReSeed ? (
-            <button
-              type="button"
-              onClick={() => setConfirmReSeed(true)}
-              disabled={reSeeding}
-              className="px-4 py-2 rounded bg-purple-50 hover:bg-purple-100 text-[#714B67] border border-purple-200 text-xs font-semibold shadow-xs flex items-center gap-2 cursor-pointer transition disabled:opacity-50"
-            >
-              <RefreshCw className={`w-4 h-4 ${reSeeding ? 'animate-spin' : ''}`} />
-              <span>{reSeeding ? 'Seeding Firestore...' : 'Re-Seed Demo Data'}</span>
-            </button>
-          ) : (
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded bg-amber-50 border border-amber-300 text-xs">
-              <span className="text-amber-900 font-semibold">Seed default equipment &amp; job cards?</span>
+          {canSyncBaseline && (
+            !confirmBaselineSync ? (
               <button
                 type="button"
-                disabled={reSeeding}
-                onClick={handleConfirmReSeedData}
-                className="px-2.5 py-1 rounded bg-amber-700 hover:bg-amber-800 text-white font-bold cursor-pointer disabled:opacity-50"
+                onClick={() => setConfirmBaselineSync(true)}
+                disabled={syncingBaseline}
+                className="px-4 py-2 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-300 text-xs font-semibold shadow-xs flex items-center gap-2 cursor-pointer transition disabled:opacity-50"
               >
-                {reSeeding ? 'Seeding...' : 'Confirm'}
+                <Database className={`w-4 h-4 ${syncingBaseline ? 'animate-pulse' : ''}`} />
+                <span>{syncingBaseline ? 'Syncing Plant Baseline...' : 'Initialize / Sync Official Equipment (105)'}</span>
               </button>
+            ) : (
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded bg-emerald-50 border border-emerald-300 text-xs">
+                <span className="text-emerald-950 font-semibold">
+                  Upsert 105 plant assets to {firebaseRuntimeInfo.projectId}?
+                </span>
+                <button
+                  type="button"
+                  disabled={syncingBaseline}
+                  onClick={handleConfirmSyncBaseline}
+                  className="px-2.5 py-1 rounded bg-[#1b4332] hover:bg-[#143326] text-white font-bold cursor-pointer disabled:opacity-50"
+                >
+                  {syncingBaseline ? 'Syncing...' : 'Confirm'}
+                </button>
+                <button
+                  type="button"
+                  disabled={syncingBaseline}
+                  onClick={() => setConfirmBaselineSync(false)}
+                  className="px-2 py-1 rounded bg-white border border-slate-300 text-slate-700 font-semibold cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
+            )
+          )}
+
+          {!firebaseRuntimeInfo.isProduction && (
+            !confirmReSeed ? (
               <button
                 type="button"
+                onClick={() => setConfirmReSeed(true)}
                 disabled={reSeeding}
-                onClick={() => setConfirmReSeed(false)}
-                className="px-2 py-1 rounded bg-white border border-slate-300 text-slate-700 font-semibold cursor-pointer"
+                className="px-4 py-2 rounded bg-purple-50 hover:bg-purple-100 text-[#714B67] border border-purple-200 text-xs font-semibold shadow-xs flex items-center gap-2 cursor-pointer transition disabled:opacity-50"
               >
-                Cancel
+                <RefreshCw className={`w-4 h-4 ${reSeeding ? 'animate-spin' : ''}`} />
+                <span>{reSeeding ? 'Seeding Firestore...' : 'Re-Seed Demo Data (Dev Only)'}</span>
               </button>
-            </div>
+            ) : (
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded bg-amber-50 border border-amber-300 text-xs">
+                <span className="text-amber-900 font-semibold">Seed sample dev job cards &amp; equipment?</span>
+                <button
+                  type="button"
+                  disabled={reSeeding}
+                  onClick={handleConfirmReSeedData}
+                  className="px-2.5 py-1 rounded bg-amber-700 hover:bg-amber-800 text-white font-bold cursor-pointer disabled:opacity-50"
+                >
+                  {reSeeding ? 'Seeding...' : 'Confirm'}
+                </button>
+                <button
+                  type="button"
+                  disabled={reSeeding}
+                  onClick={() => setConfirmReSeed(false)}
+                  className="px-2 py-1 rounded bg-white border border-slate-300 text-slate-700 font-semibold cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
+            )
           )}
         </div>
       </div>

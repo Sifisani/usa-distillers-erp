@@ -2,12 +2,12 @@ import {
   collection,
   doc,
   setDoc,
-  getDocs,
   updateDoc,
   deleteDoc,
-  onSnapshot
+  onSnapshot,
+  writeBatch
 } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { auth, db, handleFirestoreError, OperationType } from '../firebase';
 import {
   Equipment,
   EquipmentModificationLog,
@@ -78,12 +78,7 @@ export function subscribeEquipment(
     q,
     async (snapshot) => {
       if (snapshot.empty) {
-        // Pre-seed default distillery equipment if first time
-        try {
-          await seedInitialEquipment();
-        } catch (e) {
-          console.warn('Could not auto-seed equipment:', e);
-        }
+        onUpdate([]);
         return;
       }
       const items: Equipment[] = snapshot.docs.map((d) => {
@@ -135,30 +130,48 @@ export function subscribeEquipment(
   );
 }
 
-export async function seedInitialEquipment() {
-  for (const item of INITIAL_EQUIPMENT_DATA) {
-    const docId = item.code.toLowerCase().replace(/[^a-z0-9]/g, '-');
-    const docRef = doc(db, COLLECTION_NAME, docId);
-    await setDoc(docRef, sanitizeForFirestore(item), { merge: true });
+async function batchUpsertEquipment(
+  items: Omit<Equipment, 'id'>[],
+  stampUpdatedAt: boolean
+): Promise<number> {
+  if (!auth.currentUser) {
+    throw new Error('Authentication required before initializing plant equipment.');
   }
+  const CHUNK_SIZE = 400;
+  const nowIso = new Date().toISOString();
+  let count = 0;
+
+  try {
+    for (let i = 0; i < items.length; i += CHUNK_SIZE) {
+      const chunk = items.slice(i, i + CHUNK_SIZE);
+      const batch = writeBatch(db);
+      for (const item of chunk) {
+        const docId = item.code.toLowerCase().replace(/[^a-z0-9]/g, '-');
+        const docRef = doc(db, COLLECTION_NAME, docId);
+        const payload = stampUpdatedAt ? { ...item, updatedAt: nowIso } : item;
+        batch.set(docRef, sanitizeForFirestore(payload), { merge: true });
+        count++;
+      }
+      await batch.commit();
+    }
+    return count;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, COLLECTION_NAME);
+    throw error;
+  }
+}
+
+export async function seedInitialEquipment(): Promise<void> {
+  await batchUpsertEquipment(INITIAL_EQUIPMENT_DATA, false);
 }
 
 /**
  * Idempotently syncs all 105 active plant machinery items from the official
- * USA Distillers Electrical Plant Checklist into Firestore.
+ * USA Distillers Electrical Plant Checklist into Firestore via batched writes.
  */
 export async function syncOfficialPlantEquipmentRegistry(): Promise<{ syncedCount: number }> {
-  let count = 0;
-  for (const item of PLANT_EQUIPMENT_REGISTRY) {
-    const docId = item.code.toLowerCase().replace(/[^a-z0-9]/g, '-');
-    const docRef = doc(db, COLLECTION_NAME, docId);
-    await setDoc(docRef, sanitizeForFirestore({
-      ...item,
-      updatedAt: new Date().toISOString()
-    }), { merge: true });
-    count++;
-  }
-  return { syncedCount: count };
+  const syncedCount = await batchUpsertEquipment(PLANT_EQUIPMENT_REGISTRY, true);
+  return { syncedCount };
 }
 
 export async function createEquipment(data: Omit<Equipment, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {

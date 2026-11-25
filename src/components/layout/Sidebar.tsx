@@ -9,7 +9,6 @@ import {
   LayoutDashboard,
   Users,
   Settings,
-  Lock,
   Grid,
   Zap
 } from 'lucide-react';
@@ -77,27 +76,33 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
   ];
 
-  // Phase 2: Deferred Systems (Visually greyed out per CEO UI directive)
-  const phase2Roadmap = [
+  const operationsGovernanceApps = [
     {
       id: 'reports',
       label: 'Daily Plant Report',
-      icon: FileSpreadsheet
+      icon: FileSpreadsheet,
+      desc: 'Consolidated Daily Plant & Alcohol Tanks Sheet'
     },
     {
       id: 'dashboard',
       label: 'Operations KPIs',
-      icon: LayoutDashboard
+      icon: LayoutDashboard,
+      desc: 'Maintenance KPIs & Work Order Analytics'
     },
     {
       id: 'organogram',
       label: 'Staff Organogram',
-      icon: Users
-    },
+      icon: Users,
+      desc: 'Management & Shift Roster Directory'
+    }
+  ];
+
+  const configurationApps = [
     {
       id: 'settings',
-      label: 'Plant Settings',
-      icon: Settings
+      label: 'Plant Settings & Users',
+      icon: Settings,
+      desc: 'Environment Status, User Roles, Org Master Data & Exports'
     }
   ];
 
@@ -108,7 +113,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div className="px-3 py-1.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
           <span>Job Card Engine</span>
           <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800 font-bold">
-            Phase 1
+            Active
           </span>
         </div>
 
@@ -194,33 +199,67 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
         </div>
 
-        {/* Phase 2 ERP Roadmap (Greyed Out / Visible but unclickable per CEO prompt) */}
+        {/* Operations & Governance Modules */}
         <div className="mt-5 pt-3.5 border-t border-slate-200">
-          <div className="px-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center justify-between">
-            <span>Phase 2 Modules</span>
-            <Lock className="w-3 h-3 text-slate-400" />
+          <div className="px-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">
+            <span>Operations &amp; Governance</span>
           </div>
 
-          <div className="space-y-1">
-            {phase2Roadmap.map((item) => {
+          <nav className="space-y-1">
+            {operationsGovernanceApps.map((item) => {
               const Icon = item.icon;
+              const isActive = currentView === item.id;
               return (
-                <div
+                <button
                   key={item.id}
-                  title={`${item.label} will be enabled in Phase 2 rollout`}
-                  className="w-full flex items-center justify-between px-3 py-1.5 rounded-md text-xs font-medium text-slate-400 bg-slate-50/50 cursor-not-allowed border border-dashed border-slate-200/60 opacity-65"
+                  type="button"
+                  onClick={() => onSelectView(item.id)}
+                  title={item.desc}
+                  className={`w-full flex items-center justify-between px-3 py-1.5 rounded-md text-xs font-medium transition cursor-pointer ${
+                    isActive
+                      ? 'bg-[#714B67] text-white shadow-xs font-semibold'
+                      : 'text-slate-700 hover:bg-slate-200/70 hover:text-slate-900'
+                  }`}
                 >
                   <div className="flex items-center space-x-2.5 truncate">
-                    <Icon className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                    <Icon className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-white' : 'text-slate-500'}`} />
                     <span className="truncate">{item.label}</span>
                   </div>
-                  <span className="text-[9px] font-mono text-slate-400 bg-slate-200/60 px-1.5 py-0.2 rounded">
-                    Phase 2
-                  </span>
-                </div>
+                </button>
               );
             })}
+          </nav>
+        </div>
+
+        {/* Administration & Plant Configuration */}
+        <div className="mt-4 pt-3 border-t border-slate-200">
+          <div className="px-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+            <span>Administration</span>
           </div>
+          <nav className="space-y-1">
+            {configurationApps.map((item) => {
+              const Icon = item.icon;
+              const isActive = currentView === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => onSelectView(item.id)}
+                  title={item.desc}
+                  className={`w-full flex items-center justify-between px-3 py-1.5 rounded-md text-xs font-medium transition cursor-pointer ${
+                    isActive
+                      ? 'bg-[#1b4332] text-white shadow-xs font-semibold'
+                      : 'text-slate-700 hover:bg-slate-200/70 hover:text-slate-900'
+                  }`}
+                >
+                  <div className="flex items-center space-x-2.5 truncate">
+                    <Icon className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-emerald-300' : 'text-slate-500'}`} />
+                    <span className="truncate">{item.label}</span>
+                  </div>
+                </button>
+              );
+            })}
+          </nav>
         </div>
       </div>
 

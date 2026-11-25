@@ -6,9 +6,10 @@ import {
   updateDoc,
   onSnapshot,
   query,
-  orderBy
+  orderBy,
+  writeBatch
 } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { db, handleFirestoreError, OperationType, firebaseRuntimeInfo } from '../firebase';
 import {
   StoresRequisitionSlip,
   StoresSlipItem,
@@ -112,22 +113,31 @@ let hasAttemptedSeed = false;
 /**
  * Subscribe to realtime Stores Issue Requisition Slips
  */
-export function subscribeStoresSlips(callback: (slips: StoresRequisitionSlip[]) => void) {
+export function subscribeStoresSlips(
+  callback: (slips: StoresRequisitionSlip[]) => void,
+  onError?: (error: Error) => void
+) {
   const slipsRef = collection(db, STORES_SLIPS_COLLECTION);
   const q = query(slipsRef, orderBy('createdAt', 'desc'));
 
   return onSnapshot(
     q,
     async (snapshot) => {
-      if (snapshot.empty && !hasAttemptedSeed) {
-        hasAttemptedSeed = true;
-        try {
-          for (const item of INITIAL_STORES_SLIPS_SEED) {
-            await setDoc(doc(db, STORES_SLIPS_COLLECTION, item.id), item);
+      if (snapshot.empty) {
+        if (!firebaseRuntimeInfo.isProduction && !hasAttemptedSeed) {
+          hasAttemptedSeed = true;
+          try {
+            const batch = writeBatch(db);
+            for (const item of INITIAL_STORES_SLIPS_SEED) {
+              batch.set(doc(db, STORES_SLIPS_COLLECTION, item.id), item);
+            }
+            await batch.commit();
+            return;
+          } catch (e) {
+            console.warn('[StoresSlipService] Auto-seed failed:', e);
           }
-        } catch (e) {
-          console.warn('[StoresSlipService] Auto-seed failed:', e);
         }
+        callback([]);
         return;
       }
 
@@ -144,7 +154,11 @@ export function subscribeStoresSlips(callback: (slips: StoresRequisitionSlip[]) 
       callback(slips);
     },
     (error) => {
-      handleFirestoreError(error, OperationType.GET, STORES_SLIPS_COLLECTION);
+      try {
+        handleFirestoreError(error, OperationType.GET, STORES_SLIPS_COLLECTION);
+      } catch (wrappedErr) {
+        if (onError) onError(wrappedErr as Error);
+      }
     }
   );
 }
